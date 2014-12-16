@@ -101,15 +101,18 @@ Task.makeKey = function(snap) {
 Task.prototype.updateFrom = function(snap) {
   this.expiry = snap.getPriority() || 0;
   delete this.removed;
-  if (this.timeout) clearTimeout(this.timeout);
-  var now = this.queue.now();
-  if (this.expiry > now) {
-    this.timeout = setTimeout(this.queue.process.bind(this.queue, this), this.expiry - now);
-  }
 };
 
 Task.prototype.ready = function() {
-  return !(this.removed || this.expiry > this.queue.now() || this.working && !this.expiry);
+  if (this.removed || this.working && !this.expiry) return false;
+  var now = this.queue.now();
+  if (this.expiry > now) {
+    if (this.timeout) clearTimeout(this.timeout);
+    // Pad the timeout a bit, since it can fire early and we don't want to have to reschedule.
+    this.timeout = setTimeout(this.queue.process.bind(this.queue, this), this.expiry - now + 100);
+    return false;
+  }
+  return true;
 };
 
 Task.prototype.process = function() {
