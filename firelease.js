@@ -80,11 +80,11 @@ function duration(value) {
   return ms(value);
 }
 
-var scan = _.debounce(function() {
+var scanAll = _.debounce(function() {
   _.each(tasks, function(task) {
     task.queue.process(task);
   });
-}, 0);
+}, 100);
 
 
 function Task(queue, snap) {
@@ -100,19 +100,24 @@ Task.makeKey = function(snap) {
 
 Task.prototype.updateFrom = function(snap) {
   this.expiry = snap.getPriority() || 0;
+  // console.log('update', this.key, 'expiry', this.expiry);
   delete this.removed;
 };
 
-Task.prototype.ready = function() {
+Task.prototype.prepare = function() {
   if (this.removed || this.working && !this.expiry) return false;
   var now = this.queue.now();
-  if (this.expiry > now) {
-    if (this.timeout) clearTimeout(this.timeout);
-    // Pad the timeout a bit, since it can fire early and we don't want to have to reschedule.
-    this.timeout = setTimeout(this.queue.process.bind(this.queue, this), this.expiry - now + 100);
-    return false;
+  var busy = this.expiry > now;
+  // console.log('prepare', this.ref.name(), 'expiry', this.expiry, 'now', now);
+  if (!busy) {
+    // Locally reserve for min lease duration to prevent concurrent transaction attempts.  Expiry
+    // will be overwritten when transaction completes or task gets removed.
+    this.expiry = now + this.queue.constrainLeaseDuration(0);
   }
-  return true;
+  if (this.timeout) clearTimeout(this.timeout);
+  // Pad the timeout a bit, since it can fire early and we don't want to have to reschedule.
+  this.timeout = setTimeout(this.queue.process.bind(this.queue, this), this.expiry - now + 100);
+  return !busy;
 };
 
 Task.prototype.process = function() {
@@ -125,6 +130,7 @@ Task.prototype.process = function() {
     }
     item._lease = item._lease || {};
     startTimestamp = this.queue.now();
+    // console.log('txn  ', this.ref.name(), 'expiry', item._lease.expiry, 'now', startTimestamp);
     if (item._lease.expiry && item._lease.expiry > startTimestamp) {
       console.log('Queue item', this.key, 'transaction abandoned because too early');
       return;
@@ -152,7 +158,7 @@ Task.prototype.process = function() {
 Task.prototype.run = function(item, startTimestamp) {
   Object.defineProperty(item, '$ref', {value: this.ref});
   return this.queue.callWorker(item).then((function(value) {
-    if (!value) return this.ref.remove();
+    if (_.isUndefined(value) || value === null) return this.ref.remove();
     if (value === exports.RETRY) {
       return this.ref.child('_lease/time').remove();
     } else {
@@ -187,6 +193,14 @@ function Queue(ref, options, worker) {
   this.numConcurrent = 0;
   this.worker = worker;
   this.ref = ref;
+
+  // Need each queue's scan function to be debounced separately.
+  this.scan = _.debounce(function() {
+    _.each(tasks, function(task) {
+      if (task.queue === this) task.queue.process(task);
+    }, this);
+  }, 100);
+
   var top = ref.startAt().limit(this.options.bufferSize);
   top.on('child_added', this.addTask.bind(this), this.crash.bind(this));
   top.on('child_removed', this.removeTask.bind(this), this.crash.bind(this));
@@ -238,14 +252,15 @@ Queue.prototype.constrainLeaseDuration = function(time) {
 };
 
 Queue.prototype.process = function(task) {
-  if (this.hasQuota() && task.ready()) {
+  if (this.hasQuota() && task.prepare()) {
     globalNumConcurrent++;
     this.numConcurrent++;
     task.process().then((function() {
       if (task.removed) delete tasks[task.key];
-      if (globalNumConcurrent === exports.globalMaxConcurrent ||
-          this.numConcurrent === this.options.maxConcurrent) {
-        scan();
+      if (globalNumConcurrent === exports.globalMaxConcurrent) {
+        scanAll();
+      } else if (this.numConcurrent === this.options.maxConcurrent) {
+        this.scan();
       }
       globalNumConcurrent--;
       this.numConcurrent--;
