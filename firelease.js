@@ -89,7 +89,7 @@ var scanAll = _.debounce(function() {
 
 function Task(queue, snap) {
   this.queue = queue;
-  this.ref = queue.ref.child(snap.name());  // TODO: change to snap.ref() when NodeFire fixed
+  this.ref = queue.ref.child(snap.key());  // TODO: change to snap.ref() when NodeFire fixed
   this.key = Task.makeKey(snap);
   this.updateFrom(snap);
 }
@@ -108,7 +108,7 @@ Task.prototype.prepare = function() {
   if (this.removed || this.working && !this.expiry) return false;
   var now = this.queue.now();
   var busy = this.expiry > now;
-  // console.log('prepare', this.ref.name(), 'expiry', this.expiry, 'now', now);
+  // console.log('prepare', this.ref.key(), 'expiry', this.expiry, 'now', now);
   if (!busy) {
     // Locally reserve for min lease duration to prevent concurrent transaction attempts.  Expiry
     // will be overwritten when transaction completes or task gets removed.
@@ -130,18 +130,18 @@ Task.prototype.process = function() {
     }
     item._lease = item._lease || {};
     startTimestamp = this.queue.now();
-    // console.log('txn  ', this.ref.name(), 'expiry', item._lease.expiry, 'now', startTimestamp);
+    // console.log('txn  ', this.ref.key(), 'expiry', item._lease.expiry, 'now', startTimestamp);
     if (item._lease.expiry && item._lease.expiry > startTimestamp) {
       console.log('Queue item', this.key, 'transaction abandoned because too early');
       return;
     }
-    if (this.ref.name() === PING_KEY) return null;
+    if (this.ref.key() === PING_KEY) return null;
     item._lease.time = this.queue.constrainLeaseDuration(item._lease.time * 2 || 0);
     item._lease.expiry = startTimestamp + item._lease.time;
     item['.priority'] = item._lease.expiry;
     return item;
   }).bind(this)).then((function(item) {
-    if (_.isUndefined(item) || this.ref.name() === PING_KEY) return;
+    if (_.isUndefined(item) || this.ref.key() === PING_KEY) return;
     if (!_.isObject(item)) throw new Error('item not an object: ' + item);
     return this.run(item, startTimestamp);
   }).bind(this)).catch((function(error) {
@@ -201,7 +201,7 @@ function Queue(ref, options, worker) {
     }, this);
   }, 100);
 
-  var top = ref.startAt().limit(this.options.bufferSize);
+  var top = ref.orderByPriority().limitToFirst(this.options.bufferSize);
   top.on('child_added', this.addTask.bind(this), this.crash.bind(this));
   top.on('child_removed', this.removeTask.bind(this), this.crash.bind(this));
   top.on('child_moved', this.addTask.bind(this), this.crash.bind(this));
@@ -303,6 +303,8 @@ function pingQueues() {
   })).then(function(latencies) {
     var maxLatency = Math.max.apply(null, latencies);
     if (maxLatency > 0) {
+      // Backup scan in case tasks are stuck on a queue due to bugs.
+      scanAll();
       console.logJson(
         {queues: {healthy: maxLatency < PING_HEALTHY_LATENCY, maxLatency: maxLatency}});
     }
