@@ -305,8 +305,8 @@ function pingQueues() {
     if (maxLatency > 0) {
       // Backup scan in case tasks are stuck on a queue due to bugs.
       scanAll();
-      console.logJson(
-        {queues: {healthy: maxLatency < PING_HEALTHY_LATENCY, maxLatency: maxLatency}});
+      console.log(JSON.stringify(
+        {queues: {healthy: maxLatency < PING_HEALTHY_LATENCY, maxLatency: maxLatency}}));
     }
     pinging = false;
   });
