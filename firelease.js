@@ -89,7 +89,7 @@ var scanAll = _.debounce(function() {
 
 function Task(queue, snap) {
   this.queue = queue;
-  this.ref = queue.ref.child(snap.key());  // TODO: change to snap.ref() when NodeFire fixed
+  this.ref = snap.ref();
   this.key = Task.makeKey(snap);
   this.updateFrom(snap);
 }
