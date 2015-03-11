@@ -136,8 +136,8 @@ Task.prototype.process = function() {
     item._lease = item._lease || {};
     startTimestamp = this.queue.now();
     // console.log('txn  ', this.ref.key(), 'expiry', item._lease.expiry, 'now', startTimestamp);
-    if (item._lease.expiry && item._lease.expiry > startTimestamp) {
-      console.log('Queue item', this.key, 'transaction abandoned because too early');
+    // Check if another process beat us to it.
+    if (item._lease.expiry && item._lease.expiry + this.queue.options.leaseDelay > startTimestamp) {
       return;
     }
     if (this.ref.key() === PING_KEY) return null;
