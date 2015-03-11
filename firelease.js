@@ -23,7 +23,7 @@ exports.globalMaxConcurrent = Number.MAX_VALUE;
  * @type {Object}
  */
 exports.defaults = {
-  maxConcurrent: Number.MAX_VALUE, bufferSize: 5, minLease: '30s', maxLease: '1h'
+  maxConcurrent: Number.MAX_VALUE, bufferSize: 5, minLease: '30s', maxLease: '1h', leaseDelay: 0
 };
 
 /**
@@ -58,6 +58,9 @@ var globalNumConcurrent = 0;
  *          milliseconds, or a human-readable duration string.
  *        maxLease: {number | string} maximum duration of each lease, same format as minLease; the
  *          lease duration is doubled each time a task fails until it reaches maxLease.
+ *        leaseDelay: {number | string} duration by which to delay leasing an item after it becomes
+ *          available (same format as minLease); useful for setting up "backup" servers that only
+ *          grab tasks that aren't taken up fast enough by the primary.
  * @param {function(Object):RETRY | number | string | undefined} worker The worker function that
  *        handles enqueued tasks.  It will be given a task object as argument, with a special $ref
  *        attribute set to the Nodefire ref of that task.  The worker can perform arbitrary
@@ -99,7 +102,7 @@ Task.makeKey = function(snap) {
 };
 
 Task.prototype.updateFrom = function(snap) {
-  this.expiry = snap.getPriority() || 0;
+  this.expiry = snap.getPriority() || this.queue.now();
   // console.log('update', this.key, 'expiry', this.expiry);
   delete this.removed;
 };
@@ -107,7 +110,7 @@ Task.prototype.updateFrom = function(snap) {
 Task.prototype.prepare = function() {
   if (this.removed || this.working && !this.expiry) return false;
   var now = this.queue.now();
-  var busy = this.expiry > now;
+  var busy = this.expiry + this.queue.options.leaseDelay > now;
   // console.log('prepare', this.ref.key(), 'expiry', this.expiry, 'now', now);
   if (!busy) {
     // Locally reserve for min lease duration to prevent concurrent transaction attempts.  Expiry
@@ -116,7 +119,9 @@ Task.prototype.prepare = function() {
   }
   if (this.timeout) clearTimeout(this.timeout);
   // Pad the timeout a bit, since it can fire early and we don't want to have to reschedule.
-  this.timeout = setTimeout(this.queue.process.bind(this.queue, this), this.expiry - now + 100);
+  this.timeout = setTimeout(
+    this.queue.process.bind(this.queue, this),
+    this.expiry + this.queue.options.leaseDelay - now + 100);
   return !busy;
 };
 
@@ -190,6 +195,7 @@ function Queue(ref, options, worker) {
   this.options = _.defaults({}, options, exports.defaults);
   this.options.minLease = duration(this.options.minLease);
   this.options.maxLease = duration(this.options.maxLease);
+  this.options.leaseDelay = duration(this.options.leaseDelay);
   this.numConcurrent = 0;
   this.worker = worker;
   this.ref = ref;
