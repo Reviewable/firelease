@@ -129,10 +129,7 @@ Task.prototype.process = function() {
   var startTimestamp;
   this.working = true;
   return this.ref.transaction((function(item) {
-    if (!item) {
-      console.log('Queue item', this.key, 'transaction abandoned because no item');
-      return;
-    }
+    if (!item) return;
     item._lease = item._lease || {};
     startTimestamp = this.queue.now();
     // console.log('txn  ', this.ref.key(), 'expiry', item._lease.expiry, 'now', startTimestamp);
