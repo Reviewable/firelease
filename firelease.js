@@ -33,7 +33,7 @@ exports.defaults = {
  */
 exports.captureError = function(error) {console.log(error.stack);};
 
-var PING_INTERVAL = ms('5m');
+var PING_INTERVAL = ms('1m');
 var PING_HEALTHY_LATENCY = ms('1.5s');
 var PING_KEY = 'ping';
 
