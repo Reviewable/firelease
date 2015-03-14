@@ -330,5 +330,6 @@ setInterval(function() {
   pingQueues().catch(function(error) {
     console.log('Error while pinging:', error);
     exports.captureError(error);
+    pinging = false;
   });
 }, PING_INTERVAL);
