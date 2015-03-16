@@ -61,6 +61,11 @@ var globalNumConcurrent = 0;
  *        leaseDelay: {number | string} duration by which to delay leasing an item after it becomes
  *          available (same format as minLease); useful for setting up "backup" servers that only
  *          grab tasks that aren't taken up fast enough by the primary.
+ *        preprocess: {function(Object):Object} a function to use to preprocess each item during the
+ *          leasing transaction.  This function must be fast, synchronous, idempotent, and
+ *          should return the modified item (passed as the sole argument, OK to mutate).  One use
+ *          for preprocessing is to clean up items written to a queue by a process outside your
+ *          control (e.g., webhooks).
  * @param {function(Object):RETRY | number | string | undefined} worker The worker function that
  *        handles enqueued tasks.  It will be given a task object as argument, with a special $ref
  *        attribute set to the Nodefire ref of that task.  The worker can perform arbitrary
@@ -141,9 +146,9 @@ Task.prototype.process = function() {
     item._lease.time = this.queue.constrainLeaseDuration(item._lease.time * 2 || 0);
     item._lease.expiry = startTimestamp + item._lease.time;
     item['.priority'] = item._lease.expiry;
-    return item;
+    return this.queue.callPreprocess(item);
   }).bind(this)).then((function(item) {
-    if (_.isUndefined(item) || this.ref.key() === PING_KEY) return;
+    if (_.isUndefined(item) || item === null || this.ref.key() === PING_KEY) return;
     if (!_.isObject(item)) throw new Error('item not an object: ' + item);
     return this.run(item, startTimestamp);
   }).bind(this)).catch((function(error) {
@@ -269,6 +274,11 @@ Queue.prototype.process = function(task) {
       this.numConcurrent--;
     }).bind(this));
   }
+};
+
+Queue.prototype.callPreprocess = function(item) {
+  if (this.options.preprocess) item = this.options.preprocess(item);
+  return item;
 };
 
 Queue.prototype.callWorker = function(item) {
