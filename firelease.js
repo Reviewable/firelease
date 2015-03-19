@@ -146,6 +146,7 @@ Task.prototype.process = function() {
     }
     item._lease.time = this.queue.constrainLeaseDuration(item._lease.time * 2 || 0);
     item._lease.expiry = startTimestamp + item._lease.time;
+    item._lease.attempts = (item._lease.attempts || 0) + 1;
     item['.priority'] = item._lease.expiry;
     return this.queue.callPreprocess(item);
   }).bind(this)).then((function(item) {
@@ -170,15 +171,16 @@ Task.prototype.run = function(item, startTimestamp) {
     if (value === exports.RETRY) {
       return this.ref.child('_lease/time').remove();
     } else {
-      item._lease = {expiry: startTimestamp + duration(value)};
       // This needs to be a transaction in case a lease expired before a worker was done, and
       // the item got removed while we were still working on it.
-      return this.ref.transaction(function(item2) {
+      var item2 = this.ref.transaction(function(item2) {
         if (!item2) return;
-        item2._lease = item._lease;
-        item2['.priority'] = item._lease.expiry;
+        item2._lease.expiry = startTimestamp + duration(value);
+        item2['.priority'] = item2._lease.expiry;
         return item2;
       });
+      item._lease = item2._lease;
+      return item2;
     }
   }).bind(this), (function(error) {
     console.log('Queue item', this.key, 'processing error:', error.message);
