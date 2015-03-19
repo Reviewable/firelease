@@ -177,6 +177,7 @@ Task.prototype.run = function(item, startTimestamp) {
       // the item got removed while we were still working on it.
       var item2 = this.ref.transaction(function(item2) {
         if (!item2) return;
+        item2._lease = item2._lease || {};
         item2._lease.expiry = value > 1000000000000 ? value : startTimestamp + value;
         item2._lease.time = null;
         item2['.priority'] = item2._lease.expiry;
