@@ -75,7 +75,8 @@ var globalNumConcurrent = 0;
  *        queue semantics) or otherwise modify it.  The worker can return RETRY to cause the task to
  *        be retried after the current lease expires (and reset the lease backoff counter), or a
  *        duration after which the task should be retried relative to when it was started (as either
- *        a number of milliseconds or a human-readable duration string).  If the worker returns
+ *        a number of milliseconds or a human-readable duration string), or an epoch in milliseconds
+ *        greater than 1000000000000 at which the task should be tried.  If the worker returns
  *        nothing then the task is considered completed and removed from the queue.  All of these
  *        values can also be wrapped in a promise or a generator, which will be dealt with
  *        appropriately.
@@ -171,11 +172,13 @@ Task.prototype.run = function(item, startTimestamp) {
     if (value === exports.RETRY) {
       return this.ref.child('_lease/time').remove();
     } else {
+      value = duration(value);
       // This needs to be a transaction in case a lease expired before a worker was done, and
       // the item got removed while we were still working on it.
       var item2 = this.ref.transaction(function(item2) {
         if (!item2) return;
-        item2._lease.expiry = startTimestamp + duration(value);
+        item2._lease.expiry = value > 1000000000000 ? value : startTimestamp + value;
+        item2._lease.time = null;
         item2['.priority'] = item2._lease.expiry;
         return item2;
       });
