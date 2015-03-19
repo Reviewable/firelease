@@ -60,7 +60,8 @@ var globalNumConcurrent = 0;
  *          lease duration is doubled each time a task fails until it reaches maxLease.
  *        leaseDelay: {number | string} duration by which to delay leasing an item after it becomes
  *          available (same format as minLease); useful for setting up "backup" servers that only
- *          grab tasks that aren't taken up fast enough by the primary.
+ *          grab tasks that aren't taken up fast enough by the primary.  Will not delay pings,
+ *          though.
  *        preprocess: {function(Object):Object} a function to use to preprocess each item during the
  *          leasing transaction.  This function must be fast, synchronous, idempotent, and
  *          should return the modified item (passed as the sole argument, OK to mutate).  One use
@@ -115,7 +116,7 @@ Task.prototype.updateFrom = function(snap) {
 Task.prototype.prepare = function() {
   if (this.removed || this.working && !this.expiry) return false;
   var now = this.queue.now();
-  var busy = this.expiry + this.queue.options.leaseDelay > now;
+  var busy = this.expiry + (this.ref.key() !== PING_KEY && this.queue.options.leaseDelay) > now;
   // console.log('prepare', this.ref.key(), 'expiry', this.expiry, 'now', now);
   if (!busy) {
     // Locally reserve for min lease duration to prevent concurrent transaction attempts.  Expiry
@@ -135,6 +136,7 @@ Task.prototype.process = function() {
   this.working = true;
   return this.ref.transaction((function(item) {
     if (!item) return;
+    if (this.ref.key() === PING_KEY) return null;
     item._lease = item._lease || {};
     startTimestamp = this.queue.now();
     // console.log('txn  ', this.ref.key(), 'expiry', item._lease.expiry, 'now', startTimestamp);
@@ -142,7 +144,6 @@ Task.prototype.process = function() {
     if (item._lease.expiry && item._lease.expiry + this.queue.options.leaseDelay > startTimestamp) {
       return;
     }
-    if (this.ref.key() === PING_KEY) return null;
     item._lease.time = this.queue.constrainLeaseDuration(item._lease.time * 2 || 0);
     item._lease.expiry = startTimestamp + item._lease.time;
     item['.priority'] = item._lease.expiry;
