@@ -60,8 +60,7 @@ var globalNumConcurrent = 0;
  *          lease duration is doubled each time a task fails until it reaches maxLease.
  *        leaseDelay: {number | string} duration by which to delay leasing an item after it becomes
  *          available (same format as minLease); useful for setting up "backup" servers that only
- *          grab tasks that aren't taken up fast enough by the primary.  Will not delay pings,
- *          though.
+ *          grab tasks that aren't taken up fast enough by the primary.
  *        preprocess: {function(Object):Object} a function to use to preprocess each item during the
  *          leasing transaction.  This function must be fast, synchronous, idempotent, and
  *          should return the modified item (passed as the sole argument, OK to mutate).  One use
@@ -117,7 +116,7 @@ Task.prototype.updateFrom = function(snap) {
 Task.prototype.prepare = function() {
   if (this.removed || this.working && !this.expiry) return false;
   var now = this.queue.now();
-  var busy = this.expiry + (this.ref.key() !== PING_KEY && this.queue.options.leaseDelay) > now;
+  var busy = this.expiry + this.queue.options.leaseDelay > now;
   // console.log('prepare', this.ref.key(), 'expiry', this.expiry, 'now', now);
   if (!busy) {
     // Locally reserve for min lease duration to prevent concurrent transaction attempts.  Expiry
