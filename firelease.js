@@ -174,16 +174,16 @@ Task.prototype.run = function(item, startTimestamp) {
       value = duration(value);
       // This needs to be a transaction in case a lease expired before a worker was done, and
       // the item got removed while we were still working on it.
-      var item2 = this.ref.transaction(function(item2) {
+      return this.ref.transaction(function(item2) {
         if (!item2) return;
         item2._lease = item2._lease || {};
         item2._lease.expiry = value > 1000000000000 ? value : startTimestamp + value;
         item2._lease.time = null;
         item2['.priority'] = item2._lease.expiry;
         return item2;
+      }).then(function(item2) {
+        if (item2) item._lease = item2._lease;
       });
-      item._lease = item2._lease;
-      return item2;
     }
   }).bind(this), (function(error) {
     console.log('Queue item', this.key, 'processing error:', error.message);
@@ -312,7 +312,7 @@ function pingQueues() {
     var pingRef = queue.ref.child(PING_KEY);
     return pingRef.transaction(function(item) {
       if (item) return;
-      return {timestamp: start};
+      return {timestamp: start, '.priority': 1};
     }).then(function(item) {
       if (_.isUndefined(item)) return null;  // another process is currently pinging
       return waitUntilDeleted(pingRef).then(function() {
