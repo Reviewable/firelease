@@ -317,6 +317,8 @@ function pingQueues() {
       if (_.isUndefined(item)) return null;  // another process is currently pinging
       return waitUntilDeleted(pingRef).then(function() {
         return Date.now() - start;
+      }, function() {
+        return null;
       });
     });
   })).then(function(latencies) {
@@ -338,7 +340,7 @@ function waitUntilDeleted(ref) {
       ref.off('value', onValue);
       resolve();
     }
-    ref.on('value', onValue);
+    ref.on('value', onValue, reject);
   });
 }
 
