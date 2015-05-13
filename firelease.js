@@ -23,7 +23,8 @@ exports.globalMaxConcurrent = Number.MAX_VALUE;
  * @type {Object}
  */
 exports.defaults = {
-  maxConcurrent: Number.MAX_VALUE, bufferSize: 5, minLease: '30s', maxLease: '1h', leaseDelay: 0
+  maxConcurrent: Number.MAX_VALUE, bufferSize: 5, minLease: '30s', maxLease: '1h', leaseDelay: 0,
+  healthyPingLatency: '1.5s'
 };
 
 /**
@@ -34,7 +35,6 @@ exports.defaults = {
 exports.captureError = function(error) {console.log(error.stack);};
 
 var PING_INTERVAL = ms('1m');
-var PING_HEALTHY_LATENCY = ms('1.5s');
 var PING_KEY = 'ping';
 
 var queues = [];
@@ -66,6 +66,9 @@ var globalNumConcurrent = 0;
  *          should return the modified item (passed as the sole argument, OK to mutate).  One use
  *          for preprocessing is to clean up items written to a queue by a process outside your
  *          control (e.g., webhooks).
+ *        healthyPingLatency: {number | string} the maximum response latency to pings that is
+ *          considered "healthy" for this queue; specified as either a number of milliseconds, or a
+ *          human-readable duration string.
  * @param {function(Object):RETRY | number | string | undefined} worker The worker function that
  *        handles enqueued tasks.  It will be given a task object as argument, with a special $ref
  *        attribute set to the Nodefire ref of that task.  The worker can perform arbitrary
@@ -204,6 +207,7 @@ function Queue(ref, options, worker) {
   this.options.minLease = duration(this.options.minLease);
   this.options.maxLease = duration(this.options.maxLease);
   this.options.leaseDelay = duration(this.options.leaseDelay);
+  this.options.healthyPingLatency = duration(this.options.healthyPingLatency);
   this.numConcurrent = 0;
   this.worker = worker;
   this.ref = ref;
@@ -303,8 +307,33 @@ Queue.prototype.callWorker = function(item) {
 
 
 var pinging = false;
+var pingIntervalHandle, pingCallback;
 
-function pingQueues() {
+/**
+ * Sets up regular pinging of all queues.  Can be called either before or after workers are
+ * attached, and will always ping all queues.  Can be called more than once to change the
+ * parameters.
+ * @param {Function(Object) | null} callback The callback to invoke with a report each time we ping
+ *        all the queues.  The report looks like: {healthy: true, maxLatency: 1234}.  If not
+ *        specified, reports are silently dropped.
+ * @param {number | string} interval The interval at which to ping queues, to both check the
+ *        current response latency and make sure no tasks are stuck; specified as either a number
+ *        of milliseconds, or a human-readable duration string.  Defaults to 1 minute.
+ */
+exports.pingQueues = function(callback, interval) {
+  interval = interval && duration(interval) || PING_INTERVAL;
+  if (pingIntervalHandle) clearInterval(pingIntervalHandle);
+  pingCallback = callback;
+  pingIntervalHandle = setInterval(function() {
+    checkPings().catch(function(error) {
+      console.log('Error while pinging:', error);
+      exports.captureError(error);
+      pinging = false;
+    });
+  }, interval);
+};
+
+function checkPings() {
   if (pinging) return Promise.resolve();
   pinging = true;
   return Promise.all(_.map(queues, function(queue) {
@@ -316,18 +345,22 @@ function pingQueues() {
     }).then(function(item) {
       if (_.isUndefined(item)) return null;  // another process is currently pinging
       return waitUntilDeleted(pingRef).then(function() {
-        return Date.now() - start;
+        var latency = Date.now() - start;
+        return {latency: latency, healthy: latency < queue.options.healthyPingLatency};
       }, function() {
         return null;
       });
     });
-  })).then(function(latencies) {
-    var maxLatency = Math.max.apply(null, latencies);
-    if (maxLatency > 0) {
+  })).then(function(results) {
+    results = _.compact(results);
+    if (results.length) {
       // Backup scan in case tasks are stuck on a queue due to bugs.
       scanAll();
-      console.log(JSON.stringify(
-        {queues: {healthy: maxLatency < PING_HEALTHY_LATENCY, maxLatency: maxLatency}}));
+      if (pingCallback) {
+        pingCallback({
+          healthy: _.every(results, 'healthy'),
+          maxLatency: Math.max.apply(null, _.pluck(results, 'latency'))});
+      }
     }
     pinging = false;
   });
@@ -344,10 +377,3 @@ function waitUntilDeleted(ref) {
   });
 }
 
-setInterval(function() {
-  pingQueues().catch(function(error) {
-    console.log('Error while pinging:', error);
-    exports.captureError(error);
-    pinging = false;
-  });
-}, PING_INTERVAL);
