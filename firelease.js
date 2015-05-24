@@ -1,5 +1,7 @@
 'use strict';
 
+if (typeof Promise === 'undefined') require('es6-promise').polyfill();
+require('promise.prototype.finally');
 var _ = require('underscore');
 var NodeFire = require('nodefire');
 var ms = require('ms');
@@ -169,7 +171,14 @@ Task.prototype.process = function() {
 
 Task.prototype.run = function(item, startTimestamp) {
   Object.defineProperty(item, '$ref', {value: this.ref});
-  return this.queue.callWorker(item).then((function(value) {
+  return this.queue.callWorker(item).finally((function() {
+    var now = this.queue.now();
+    if (now > item._lease.expiry) {
+      console.log(
+        'Queue item', this.key, 'exceeded lease time of', ms(item._lease.expiry - startTimestamp),
+        'by taking', ms(now - startTimestamp));
+    }
+  }).bind(this)).then((function(value) {
     if (_.isUndefined(value) || value === null) return this.ref.remove();
     if (value === exports.RETRY) {
       return this.ref.child('_lease/time').remove();
