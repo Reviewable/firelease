@@ -177,7 +177,9 @@ Task.prototype.run = function(item, startTimestamp) {
       // If it looks like we exceeded the lease time, double-check against the current item before
       // crying wolf, in case the worker extended the lease.
       return this.ref.get().then((function(item) {
-        if (now > item._lease.expiry) {
+        // If no item, we can't tell if it's because the worker chose to delete it early, or because
+        // it overran its lease and another worker picked it up and completed it, so say nothing.
+        if (item && now > item._lease.expiry) {
           console.log(
             'Queue item', this.key, 'exceeded lease time of',
             ms(item._lease.expiry - startTimestamp), 'by taking', ms(now - startTimestamp));
