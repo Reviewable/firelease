@@ -174,9 +174,15 @@ Task.prototype.run = function(item, startTimestamp) {
   return this.queue.callWorker(item).finally((function() {
     var now = this.queue.now();
     if (now > item._lease.expiry) {
-      console.log(
-        'Queue item', this.key, 'exceeded lease time of', ms(item._lease.expiry - startTimestamp),
-        'by taking', ms(now - startTimestamp));
+      // If it looks like we exceeded the lease time, double-check against the current item before
+      // crying wolf, in case the worker extended the lease.
+      return this.ref.get().then(function(item) {
+        if (now > item._lease.expiry) {
+          console.log(
+            'Queue item', this.key, 'exceeded lease time of',
+            ms(item._lease.expiry - startTimestamp), 'by taking', ms(now - startTimestamp));
+        }
+      });
     }
   }).bind(this)).then((function(value) {
     if (_.isUndefined(value) || value === null) return this.ref.remove();
