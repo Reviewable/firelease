@@ -160,6 +160,7 @@ Task.prototype.process = function() {
     return this.run(item, startTimestamp);
   }).bind(this)).catch((function(error) {
     console.log('Queue item', this.key, 'lease transaction error:', error.message);
+    error.firelease = {itemKey: this.key, phase: 'leasing'};
     exports.captureError(error);
     // Hardcoded retry in 1 second -- hard to do anything smarter, since we failed to update the
     // task in Firebase.
@@ -207,9 +208,11 @@ Task.prototype.run = function(item, startTimestamp) {
     }
   }).bind(this), (function(error) {
     console.log('Queue item', this.key, 'processing error:', error.message);
+    error.firelease = {itemKey: this.key, phase: 'processing'};
     exports.captureError(error);
   }).bind(this)).catch((function(error) {
     console.log('Queue item', this.key, 'post-processing error:', error.message);
+    error.firelease = {itemKey: this.key, phase: 'post-processing'};
     exports.captureError(error);
   }).bind(this));
 };
@@ -244,6 +247,7 @@ function Queue(ref, options, worker) {
 
 Queue.prototype.crash = function(error) {
   console.log('Queue worker', this.ref.toString(), 'interrupted:', error);
+  error.firelease = {queue: this.ref.toString(), phase: 'crashing'};
   exports.captureError(error);
   process.exit(1);
 };
@@ -344,6 +348,7 @@ exports.pingQueues = function(callback, interval) {
   pingIntervalHandle = setInterval(function() {
     checkPings().catch(function(error) {
       console.log('Error while pinging:', error);
+      error.firelease = {phase: 'pinging'};
       exports.captureError(error);
       pinging = false;
     });
