@@ -76,14 +76,17 @@ var globalNumConcurrent = 0;
  *        attribute set to the Nodefire ref of that task.  The worker can perform arbitrary
  *        computation whose duration should not exceed the queue's minLease value.  It can
  *        manipulate the task itself in Firebase as well, e.g. to delete it (to get at-most-once
- *        queue semantics) or otherwise modify it.  The worker can return RETRY to cause the task to
- *        be retried after the current lease expires (and reset the lease backoff counter), or a
- *        duration after which the task should be retried relative to when it was started (as either
- *        a number of milliseconds or a human-readable duration string), or an epoch in milliseconds
- *        greater than 1000000000000 at which the task should be tried.  If the worker returns
- *        nothing then the task is considered completed and removed from the queue.  All of these
- *        values can also be wrapped in a promise or a generator, which will be dealt with
- *        appropriately.
+ *        queue semantics) or otherwise modify it.  The worker can return any of the following:
+ *        * undefined or null to cause the task to be retired from the queue.
+ *        * firelease.RETRY to cause the task to be retried after the current lease expires (and
+ *          reset the lease backoff counter).
+ *        * A duration after which the task should be retried relative to when it was started (as
+ *          either a number of milliseconds or a human-readable duration string).
+ *        * An epoch in milliseconds greater than 1000000000000 at which the task should be tried.
+ *        * A function that takes the task as argument and returns one of the values above.  This
+ *          function will be executed in a transaction to ensure atomicity.
+ *        All of these values can also be wrapped in a promise or a generator, which will be dealt
+ *        with appropriately.
  */
 exports.attachWorker = function(ref, options, worker) {
   queues.push(new Queue(ref, options, worker));
@@ -144,7 +147,7 @@ Task.prototype.process = function() {
     if (this.ref.key() === PING_KEY) return null;
     item._lease = item._lease || {};
     startTimestamp = this.queue.now();
-    // console.log('txn  ', this.ref.key(), 'expiry', item._lease.expiry, 'now', startTimestamp);
+    // console.log('txn  ', this.ref.key(), 'lease', item._lease, 'now', startTimestamp);
     // Check if another process beat us to it.
     if (item._lease.expiry && item._lease.expiry + this.queue.options.leaseDelay > startTimestamp) {
       return;
@@ -187,25 +190,27 @@ Task.prototype.run = function(item, startTimestamp) {
         }
       }).bind(this));
     }
-  }).bind(this)).then((function(value) {
-    if (_.isUndefined(value) || value === null) return this.ref.remove();
-    if (value === exports.RETRY) {
-      return this.ref.child('_lease/time').remove();
-    } else {
-      value = duration(value);
-      // This needs to be a transaction in case a lease expired before a worker was done, and
-      // the item got removed while we were still working on it.
-      return this.ref.transaction(function(item2) {
-        if (!item2) return;
+  }).bind(this)).then((function(result) {
+    if (_.isUndefined(result) || result === null) return this.ref.remove();  // common shortcut
+    return this.ref.transaction(function(item2) {
+      if (!item2) return;
+      var value = _.isFunction(result) ? result(item2) : result;
+      if (_.isUndefined(value) || value === null) return null;
+      if (value === exports.RETRY) {
+        if (item2._lease) delete item2._lease.time;
+      } else if (_.isNumber(value) || _.isString(value)) {
+        value = duration(value);
         item2._lease = item2._lease || {};
         item2._lease.expiry = value > 1000000000000 ? value : startTimestamp + value;
         item2._lease.time = null;
         item2['.priority'] = item2._lease.expiry;
-        return item2;
-      }).then(function(item2) {
-        if (item2) item._lease = item2._lease;
-      });
-    }
+      } else {
+        throw new Error('Unexpected return value from worker: ' + value);
+      }
+      return item2;
+    }).then(function(item2) {
+      if (item2) item._lease = item2._lease;
+    });
   }).bind(this), (function(error) {
     console.log('Queue item', this.key, 'processing error:', error.message);
     error.firelease = {itemKey: this.key, phase: 'processing'};

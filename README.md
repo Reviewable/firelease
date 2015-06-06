@@ -38,18 +38,21 @@ paths concurrently.
   * `healthyPingLatency: {number | string}` the maximum response latency to pings that is considered
     "healthy" for this queue; same format as `minLease`.
 
-* `@param {function(Object):RETRY | number | string | undefined} worker` The worker function that
-  handles enqueued tasks.  It will be given a task object as argument, with a special `$ref`
-  attribute set to the Nodefire ref of that task.  The worker can perform arbitrary
-  computation whose duration should not exceed the queue's `minLease` value.  It can
-  manipulate the task itself in Firebase as well, e.g. to delete it (to get at-most-once
-  queue semantics) or otherwise modify it.  The worker can return `RETRY` to cause the task to
-  be retried after the current lease expires (and reset the lease backoff counter), or a
-  duration after which the task should be retried relative to when it was started (as either
-  a number of milliseconds or a human-readable duration string), or an epoch in milliseconds
-  greater than 1000000000000 at which the task should be tried.  If the worker returns
-  nothing then the task is considered completed and removed from the queue.  All of these
-  values can also be wrapped in a promise or a generator, which will be dealt with
+* `@param {function(Object):RETRY | number | string | undefined}` worker The worker function that
+  handles enqueued tasks.  It will be given a task object as argument, with a special $ref attribute
+  set to the Nodefire ref of that task.  The worker can perform arbitrary computation whose duration
+  should not exceed the queue's minLease value.  It can manipulate the task itself in Firebase as
+  well, e.g. to delete it (to get at-most-once queue semantics) or otherwise modify it.  The worker
+  can return any of the following:
+  * undefined or null to cause the task to be retired from the queue.
+  * firelease.RETRY to cause the task to be retried after the current lease expires (and reset the
+    lease backoff counter).
+  * A duration after which the task should be retried relative to when it was started (as either a
+    number of milliseconds or a human-readable duration string).
+  * An epoch in milliseconds greater than 1000000000000 at which the task should be tried.
+  * A function that takes the task as argument and returns one of the values above.  This function
+    will be executed in a transaction to ensure atomicity.
+  All of these values can also be wrapped in a promise or a generator, which will be dealt with
   appropriately.
 
 
