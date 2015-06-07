@@ -6,7 +6,7 @@ A Firebase queue consumer for Node with at-least-once and at-most-once semantics
 API
 ---
 
-The module exposes two functions:
+The module exposes these functions:
 
 ```function attachWorker(ref, options, worker)```
 
@@ -68,6 +68,20 @@ and will always ping all queues.  Can be called more than once to change the par
 * `@param {number | string} interval` The interval at which to ping queues, to both check the
   current response latency and make sure no tasks are stuck; specified as either a number
   of milliseconds, or a human-readable duration string.  Defaults to 1 minute.
+
+
+```function extendLease(item, timeNeeded)```
+
+Extends the lease on a task to give the worker more time to finish.  Checks a bunch of validity
+constraints along the way and throws an error if the worker needs to abort.
+
+ * `@param {Object} item` The original task object provided to a worker function.
+
+ * `@param {number | string} timeNeeded` The minimum time needed counting from the current time,
+   specified as either a number of milliseconds or a human-readable duration.
+
+ * `@return {Promise}` A promise that will be resolved when the lease has been extended, and
+   rejected if something went wrong and the worker should abort.
 
 
 There are also some module-level settings you can change:
