@@ -78,7 +78,8 @@ constraints along the way and throws an error if the worker needs to abort.
  * `@param {Object} item` The original task object provided to a worker function.
 
  * `@param {number | string} timeNeeded` The minimum time needed counting from the current time,
-   specified as either a number of milliseconds or a human-readable duration.
+   specified as either a number of milliseconds or a human-readable duration.  The actual lease may
+   be extended by up to twice this amount, to prevent excessive churn.
 
  * `@return {Promise}` A promise that will be resolved when the lease has been extended, and
    rejected if something went wrong and the worker should abort.
