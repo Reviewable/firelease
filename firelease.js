@@ -183,7 +183,13 @@ Task.prototype.run = function(item, startTimestamp) {
       return this.ref.get().then((function(item) {
         // If no item, we can't tell if it's because the worker chose to delete it early, or because
         // it overran its lease and another worker picked it up and completed it, so say nothing.
-        if (item && now > item._lease.expiry) {
+        if (!item) return;
+        if (!item._lease) {
+          console.log(
+            'Queue item', this.key, 'likely exceeded its lease time by taking',
+            ms(now - startTimestamp),
+            'because the item has already been deleted and replaced with a new one.');
+        } else if (now > item._lease.expiry) {
           console.log(
             'Queue item', this.key, 'exceeded lease time of',
             ms(item._lease.expiry - startTimestamp), 'by taking', ms(now - startTimestamp));
