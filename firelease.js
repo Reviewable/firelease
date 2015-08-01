@@ -42,6 +42,7 @@ var PING_KEY = 'ping';
 var queues = [];
 var tasks = {};
 var globalNumConcurrent = 0;
+var shutdownCallbacks = [];
 
 /**
  * Attaches a worker function to consume tasks from a queue.  You should normally attach no more
@@ -314,6 +315,17 @@ Queue.prototype.process = function(task) {
       }
       globalNumConcurrent--;
       this.numConcurrent--;
+      if (!globalNumConcurrent && shutdownCallbacks.length) {
+        for (var i = 0; i < shutdownCallbacks.length; i++) {
+          try {
+            shutdownCallbacks[i]();
+          } catch(e) {
+            e.message = 'Shutdown callback failed: ' + e.message;
+            exports.captureError(e);
+          }
+        }
+        shutdownCallbacks = [];
+      }
     }).bind(this));
   }
 };
@@ -444,3 +456,15 @@ exports.extendLease = function(item, timeNeeded) {
     if (item2) item._lease.expiry = item2._lease.expiry;
   });
 };
+
+
+/**
+ * Shuts down firelease by refusing to take new tasks, and invokes the callback once all currently
+ * running tasks have completed.
+ * @param {function} callback The callback to invoke when all tasks have completed.
+ */
+exports.shutdown = function(callback) {
+  exports.globalMaxConcurrent = 0;
+  shutdownCallbacks.push(callback);
+};
+
