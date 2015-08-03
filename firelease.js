@@ -315,17 +315,7 @@ Queue.prototype.process = function(task) {
       }
       globalNumConcurrent--;
       this.numConcurrent--;
-      if (!globalNumConcurrent && shutdownCallbacks.length) {
-        for (var i = 0; i < shutdownCallbacks.length; i++) {
-          try {
-            shutdownCallbacks[i]();
-          } catch(e) {
-            e.message = 'Shutdown callback failed: ' + e.message;
-            exports.captureError(e);
-          }
-        }
-        shutdownCallbacks = [];
-      }
+      invokeShutdownCallbacks();
     }).bind(this));
   }
 };
@@ -466,5 +456,19 @@ exports.extendLease = function(item, timeNeeded) {
 exports.shutdown = function(callback) {
   exports.globalMaxConcurrent = 0;
   shutdownCallbacks.push(callback);
+  invokeShutdownCallbacks();
 };
 
+function invokeShutdownCallbacks() {
+  if (!globalNumConcurrent && shutdownCallbacks.length) {
+    for (var i = 0; i < shutdownCallbacks.length; i++) {
+      try {
+        shutdownCallbacks[i]();
+      } catch(e) {
+        e.message = 'Firelease shutdown callback failed: ' + e.message;
+        exports.captureError(e);
+      }
+    }
+    shutdownCallbacks = [];
+  }
+}
