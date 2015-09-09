@@ -313,7 +313,7 @@ Queue.prototype.constrainLeaseDuration = function(time) {
 Queue.prototype.countTaskAcquired = function(acquired) {
   if (this.options.maxLeaseDelay) {
     this.leaseDelay = Math.max(this.options.minLeaseDelay, Math.min(
-      this.options.maxLeaseDelay, this.leaseDelay + (acquired ? 1 : -1)));
+      this.options.maxLeaseDelay, this.leaseDelay + (acquired ? 1 : -2)));
   }
   if (acquired) this.tasksAcquired++;
 };
