@@ -26,7 +26,7 @@ exports.globalMaxConcurrent = Number.MAX_VALUE;
  */
 exports.defaults = {
   maxConcurrent: Number.MAX_VALUE, bufferSize: 5, minLease: '30s', maxLease: '1h', leaseDelay: 0,
-  healthyPingLatency: '1.5s'
+  maxLeaseDelay: 0, healthyPingLatency: '1.5s'
 };
 
 /**
@@ -47,7 +47,11 @@ var shutdownCallbacks = [];
 /**
  * Attaches a worker function to consume tasks from a queue.  You should normally attach no more
  * than one worker per path in any given process, but it's OK to run multiple processes on the same
- * paths concurrently.
+ * paths concurrently.  If you do, you probably want to set `maxLeaseDelay` to something greater
+ * than zero, to properly balance task distribution between the processes.
+ *
+ * All durations can be specified as either a human-readable string, or a number of milliseconds.
+ *
  * @param {NodeFire} ref A NodeFire ref to the queue root in Firebase.  Individual tasks will be
  *        children of this root and must be objects.  The '_lease' key is reserved for use by
  *        Firelease in each task.
@@ -57,21 +61,23 @@ var shutdownCallbacks = [];
  *          through leasing transactions in parallel; not worth setting higher than maxConcurrent,
  *          or higher than about 10.
  *        minLease: {number | string} minimum duration of each lease, which should equal the maximum
- *          expected time a worker will take to handle a task; specified as either a number of
- *          milliseconds, or a human-readable duration string.
- *        maxLease: {number | string} maximum duration of each lease, same format as minLease; the
- *          lease duration is doubled each time a task fails until it reaches maxLease.
+ *          expected time a worker will take to handle a task.
+ *        maxLease: {number | string} maximum duration of each lease; the lease duration is doubled
+ *          each time a task fails until it reaches maxLease.
  *        leaseDelay: {number | string} duration by which to delay leasing an item after it becomes
- *          available (same format as minLease); useful for setting up "backup" servers that only
- *          grab tasks that aren't taken up fast enough by the primary.
+ *          available; useful for setting up "backup" servers that only grab tasks that aren't taken
+ *          up fast enough by the primary.
+ *        maxLeaseDelay: {number | string} if non-zero, enables automatic leaseDelay adjustment and
+ *          sets the maximum duration to wait before attempting to acquire a ready task.  This is
+ *          often necessary to compensate for differences in machine or network speed, or for
+ *          Firebase's consistent order for sending event notifications to multiple clients.
  *        preprocess: {function(Object):Object} a function to use to preprocess each item during the
  *          leasing transaction.  This function must be fast, synchronous, idempotent, and
  *          should return the modified item (passed as the sole argument, OK to mutate).  One use
  *          for preprocessing is to clean up items written to a queue by a process outside your
  *          control (e.g., webhooks).
  *        healthyPingLatency: {number | string} the maximum response latency to pings that is
- *          considered "healthy" for this queue; specified as either a number of milliseconds, or a
- *          human-readable duration string.
+ *          considered "healthy" for this queue.
  * @param {function(Object):RETRY | number | string | undefined} worker The worker function that
  *        handles enqueued tasks.  It will be given a task object as argument, with a special $ref
  *        attribute set to the Nodefire ref of that task.  The worker can perform arbitrary
@@ -81,8 +87,7 @@ var shutdownCallbacks = [];
  *        * undefined or null to cause the task to be retired from the queue.
  *        * firelease.RETRY to cause the task to be retried after the current lease expires (and
  *          reset the lease backoff counter).
- *        * A duration after which the task should be retried relative to when it was started (as
- *          either a number of milliseconds or a human-readable duration string).
+ *        * A duration after which the task should be retried relative to when it was started.
  *        * An epoch in milliseconds greater than 1000000000000 at which the task should be tried.
  *        * A function that takes the task as argument and returns one of the values above.  This
  *          function will be executed in a transaction to ensure atomicity.
@@ -125,7 +130,7 @@ Task.prototype.updateFrom = function(snap) {
 Task.prototype.prepare = function() {
   if (this.removed || this.working && !this.expiry) return false;
   var now = this.queue.now();
-  var busy = this.expiry + this.queue.options.leaseDelay > now;
+  var busy = this.expiry + this.queue.leaseDelay > now;
   // console.log('prepare', this.ref.key(), 'expiry', this.expiry, 'now', now);
   if (!busy) {
     // Locally reserve for min lease duration to prevent concurrent transaction attempts.  Expiry
@@ -133,10 +138,8 @@ Task.prototype.prepare = function() {
     this.expiry = now + this.queue.constrainLeaseDuration(0);
   }
   if (this.timeout) clearTimeout(this.timeout);
-  // Pad the timeout a bit, since it can fire early and we don't want to have to reschedule.
   this.timeout = setTimeout(
-    this.queue.process.bind(this.queue, this),
-    this.expiry + this.queue.options.leaseDelay - now + 100);
+    this.queue.process.bind(this.queue, this), this.expiry + this.queue.leaseDelay - now);
   return !busy;
 };
 
@@ -150,7 +153,7 @@ Task.prototype.process = function() {
     startTimestamp = this.queue.now();
     // console.log('txn  ', this.ref.key(), 'lease', item._lease, 'now', startTimestamp);
     // Check if another process beat us to it.
-    if (item._lease.expiry && item._lease.expiry + this.queue.options.leaseDelay > startTimestamp) {
+    if (item._lease.expiry && item._lease.expiry + this.queue.leaseDelay > startTimestamp) {
       return;
     }
     item._lease.time = this.queue.constrainLeaseDuration(item._lease.time * 2 || 0);
@@ -159,8 +162,10 @@ Task.prototype.process = function() {
     item['.priority'] = item._lease.expiry;
     return this.queue.callPreprocess(item);
   }).bind(this)).then((function(item) {
+    if (_.isUndefined(item)) this.queue.countTaskAcquired(false);
     if (_.isUndefined(item) || item === null || this.ref.key() === PING_KEY) return;
     if (!_.isObject(item)) throw new Error('item not an object: ' + item);
+    this.queue.countTaskAcquired(true);
     return this.run(item, startTimestamp);
   }).bind(this)).catch((function(error) {
     console.log('Queue item', this.key, 'lease transaction error:', error.message);
@@ -238,9 +243,12 @@ function Queue(ref, options, worker) {
   this.options = _.defaults({}, options, exports.defaults);
   this.options.minLease = duration(this.options.minLease);
   this.options.maxLease = duration(this.options.maxLease);
-  this.options.leaseDelay = duration(this.options.leaseDelay);
+  this.options.minLeaseDelay = this.leaseDelay = duration(this.options.leaseDelay);
+  delete this.options.leaseDelay;
   this.options.healthyPingLatency = duration(this.options.healthyPingLatency);
+  this.options.maxLeaseDelay = duration(this.options.maxLeaseDelay);
   this.numConcurrent = 0;
+  this.tasksAcquired = 0;
   this.worker = worker;
   this.ref = ref;
 
@@ -302,6 +310,14 @@ Queue.prototype.constrainLeaseDuration = function(time) {
   return Math.min(this.options.maxLease, Math.max(time, this.options.minLease));
 };
 
+Queue.prototype.countTaskAcquired = function(acquired) {
+  if (this.options.maxLeaseDelay) {
+    this.leaseDelay = Math.max(this.options.minLeaseDelay, Math.min(
+      this.options.maxLeaseDelay, this.leaseDelay + (acquired ? 1 : -1)));
+  }
+  if (acquired) this.tasksAcquired++;
+};
+
 Queue.prototype.process = function(task) {
   if (this.hasQuota() && task.prepare()) {
     globalNumConcurrent++;
@@ -347,12 +363,14 @@ var pingIntervalHandle, pingCallback;
  * Sets up regular pinging of all queues.  Can be called either before or after workers are
  * attached, and will always ping all queues.  Can be called more than once to change the
  * parameters.
+ *
+ * All durations can be specified as either a human-readable string, or a number of milliseconds.
+ *
  * @param {Function(Object) | null} callback The callback to invoke with a report each time we ping
  *        all the queues.  The report looks like: {healthy: true, maxLatency: 1234}.  If not
  *        specified, reports are silently dropped.
  * @param {number | string} interval The interval at which to ping queues, to both check the
- *        current response latency and make sure no tasks are stuck; specified as either a number
- *        of milliseconds, or a human-readable duration string.  Defaults to 1 minute.
+ *        current response latency and make sure no tasks are stuck.  Defaults to 1 minute.
  */
 exports.pingQueues = function(callback, interval) {
   interval = interval && duration(interval) || PING_INTERVAL;
@@ -381,7 +399,10 @@ function checkPings() {
       if (_.isUndefined(item)) return null;  // another process is currently pinging
       return waitUntilDeleted(pingRef).then(function() {
         var latency = Date.now() - start;
-        return {latency: latency, healthy: latency < queue.options.healthyPingLatency};
+        return {
+          latency: latency, healthy: latency < queue.options.healthyPingLatency,
+          leaseDelay: queue.leaseDelay, tasksAcquired: queue.tasksAcquired
+        };
       }, function() {
         return null;
       });
@@ -392,9 +413,18 @@ function checkPings() {
       // Backup scan in case tasks are stuck on a queue due to bugs.
       scanAll();
       if (pingCallback) {
+        var delays = _.chain(results).pluck('leaseDelay').sortBy().value();
+        var delaysMedian = delays.length % 2 ?
+          delays[Math.floor(delays.length / 2)] :
+          ((delays[Math.floor(delays.length / 2)] +
+            delays[Math.ceil(delays.length / 2)]) / 2);
         pingCallback({
           healthy: _.every(results, 'healthy'),
-          maxLatency: Math.max.apply(null, _.pluck(results, 'latency'))});
+          maxLatency: _.max(_.pluck(results, 'latency')),
+          tasksAcquired:
+            _.reduce(results, function(sum, result) {return sum + result.tasksAcquired;}, 0),
+          leaseDelays: {min: _.min(delays), max: _.max(delays), median: delaysMedian}
+        });
       }
     }
     pinging = false;
@@ -416,10 +446,12 @@ function waitUntilDeleted(ref) {
 /**
  * Extends the lease on a task to give the worker more time to finish.  Checks a bunch of validity
  * constraints along the way and throws an error if the worker needs to abort.
+ *
+ * All durations can be specified as either a human-readable string, or a number of milliseconds.
+ *
  * @param {Object} item The original task object provided to a worker function.
- * @param {number | string} timeNeeded The minimum time needed counting from the current time,
- *        specified as either a number of milliseconds or a human-readable duration.  The actual
- *        lease may be extended by up to twice this amount, to prevent excessive churn.
+ * @param {number | string} timeNeeded The minimum time needed counting from the current time.  The
+          actual lease may be extended by up to twice this amount, to prevent excessive churn.
  * @return {Promise} A promise that will be resolved when the lease has been extended, and rejected
  *         if something went wrong and the worker should abort.
  */
