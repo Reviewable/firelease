@@ -1,8 +1,7 @@
 'use strict';
 
-if (typeof Promise === 'undefined') require('es6-promise').polyfill();
 require('promise.prototype.finally');
-var _ = require('underscore');
+var _ = require('lodash');
 var NodeFire = require('nodefire');
 var ms = require('ms');
 var co = require('co');

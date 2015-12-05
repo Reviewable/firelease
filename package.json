@@ -1,6 +1,6 @@
 {
   "name": "firelease",
-  "version": "0.3.15",
+  "version": "0.4.0",
   "description": "Firebase queue consumer for Node with at-least-once semantics",
   "main": "index.js",
   "scripts": {
@@ -22,12 +22,14 @@
     "url": "https://github.com/pkaminski/firelease/issues"
   },
   "homepage": "https://github.com/pkaminski/firelease",
+  "engines": {
+    "node": ">=0.12"
+  },
   "dependencies": {
     "co": "4.x",
-    "es6-promise": "3.x",
+    "lodash": "^3.10.1",
     "ms": "0.7.x",
     "nodefire": "0.4.x",
-    "promise.prototype.finally": "^1.0.1",
-    "underscore": "1.x"
+    "promise.prototype.finally": "^1.0.1"
   }
 }
