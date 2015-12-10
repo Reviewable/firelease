@@ -145,7 +145,7 @@ Task.prototype.prepare = function() {
 Task.prototype.process = function() {
   var startTimestamp;
   this.working = true;
-  return this.ref.transaction((function(item) {
+  var transactionPromise = this.ref.transaction((function(item) {
     if (!item) return;
     if (this.ref.key() === PING_KEY) return null;
     item._lease = item._lease || {};
@@ -160,10 +160,12 @@ Task.prototype.process = function() {
     item._lease.attempts = (item._lease.attempts || 0) + 1;
     item['.priority'] = item._lease.expiry;
     return this.queue.callPreprocess(item);
-  }).bind(this)).then((function(item) {
+  }).bind(this));
+  return transactionPromise.then((function(item) {
     if (_.isUndefined(item)) this.queue.countTaskAcquired(false);
     if (_.isUndefined(item) || item === null || this.ref.key() === PING_KEY) return;
     if (!_.isObject(item)) throw new Error('item not an object: ' + item);
+    Object.defineProperty(item, '$leaseTransaction', {value: transactionPromise.transaction});
     this.queue.countTaskAcquired(true);
     return this.run(item, startTimestamp);
   }).bind(this)).catch((function(error) {
