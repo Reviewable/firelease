@@ -458,6 +458,8 @@ function waitUntilDeleted(ref) {
  */
 exports.extendLease = function(item, timeNeeded) {
   if (!(item && item._lease && item._lease.expiry)) throw new Error('Invalid task');
+  if (item._lease.extendLeaseInProgress) return Promise.resolve();
+  item._lease.extendLeaseInProgress = true;
   timeNeeded = duration(timeNeeded);
   return item.$ref.transaction(function(item2) {
     try {
@@ -477,6 +479,8 @@ exports.extendLease = function(item, timeNeeded) {
     }
   }).then(function(item2) {
     if (item2) item._lease.expiry = item2._lease.expiry;
+  }).finally(function() {
+    delete item._lease.extendLeaseInProgress;
   });
 };
 
