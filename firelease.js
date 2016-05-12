@@ -121,7 +121,8 @@ Task.makeKey = function(snap) {
 };
 
 Task.prototype.updateFrom = function(snap) {
-  this.expiry = snap.getPriority() || this.queue.now();
+  var value = snap.val();
+  this.expiry = value && value._lease && value._lease.expiry || this.queue.now();
   // console.log('update', this.key, 'expiry', this.expiry);
   delete this.removed;
 };
@@ -158,7 +159,6 @@ Task.prototype.process = function() {
     item._lease.time = this.queue.constrainLeaseDuration(item._lease.time * 2 || 0);
     item._lease.expiry = startTimestamp + item._lease.time;
     item._lease.attempts = (item._lease.attempts || 0) + 1;
-    item['.priority'] = item._lease.expiry;
     return this.queue.callPreprocess(item);
   }).bind(this));
   return transactionPromise.then((function(item) {
@@ -216,7 +216,6 @@ Task.prototype.run = function(item, startTimestamp) {
         item2._lease = item2._lease || {};
         item2._lease.expiry = value > 1000000000000 ? value : startTimestamp + value;
         item2._lease.time = null;
-        item2['.priority'] = item2._lease.expiry;
       } else {
         throw new Error('Unexpected return value from worker: ' + value);
       }
@@ -260,7 +259,7 @@ function Queue(ref, options, worker) {
     }, this);
   }, 100);
 
-  var top = ref.orderByPriority().limitToFirst(this.options.bufferSize);
+  var top = ref.orderByChild('_lease/expiry').limitToFirst(this.options.bufferSize);
   top.on('child_added', this.addTask.bind(this), this.crash.bind(this));
   top.on('child_removed', this.removeTask.bind(this), this.crash.bind(this));
   top.on('child_moved', this.addTask.bind(this), this.crash.bind(this));
@@ -279,8 +278,6 @@ Queue.prototype.now = function() {
 
 Queue.prototype.addTask = function(snap) {
   var taskKey = Task.makeKey(snap);
-  // Ignore content updates to existing tasks that show up as priority-less adds.
-  if (!snap.getPriority() && taskKey in tasks) return;
   var task = tasks[taskKey];
   if (task) {
     task.updateFrom(snap);
@@ -395,7 +392,7 @@ function checkPings() {
     var pingRef = queue.ref.child(PING_KEY);
     return pingRef.transaction(function(item) {
       if (item) return;
-      return {timestamp: start, '.priority': 1};
+      return {timestamp: start, _lease: {expiry: 1}};
     }).then(function(item) {
       if (_.isUndefined(item)) return null;  // another process is currently pinging
       return waitUntilDeleted(pingRef).then(function() {
@@ -471,7 +468,6 @@ exports.extendLease = function(item, timeNeeded) {
       if (item2._lease.expiry <= now) throw new Error('Lease expired, unable to extend.');
       if (item2._lease.expiry >= now + timeNeeded) return;
       item2._lease.expiry += timeNeeded;
-      item2['.priority'] = item2._lease.expiry;
       return item2;
     } catch (e) {
       e.firelease = {itemKey: item.$ref.toString(), timeNeeded: timeNeeded};
