@@ -147,14 +147,13 @@ Task.prototype.process = function() {
   var startTimestamp;
   this.working = true;
   var transactionPromise = this.ref.transaction((function(item) {
-    if (!item) return;
-    if (this.ref.key() === PING_KEY) return null;
+    if (!item || this.ref.key() === PING_KEY) return null;
     item._lease = item._lease || {};
     startTimestamp = this.queue.now();
     // console.log('txn  ', this.ref.key(), 'lease', item._lease, 'now', startTimestamp);
     // Check if another process beat us to it.
     if (item._lease.expiry && item._lease.expiry + this.queue.leaseDelay > startTimestamp) {
-      return;
+      return item;
     }
     item._lease.time = this.queue.constrainLeaseDuration(item._lease.time * 2 || 0);
     item._lease.expiry = startTimestamp + item._lease.time;
@@ -206,7 +205,7 @@ Task.prototype.run = function(item, startTimestamp) {
   }).bind(this)).then((function(result) {
     if (_.isUndefined(result) || result === null) return this.ref.remove();  // common shortcut
     return this.ref.transaction(function(item2) {
-      if (!item2) return;
+      if (!item2) return null;
       var value = _.isFunction(result) ? result(item2) : result;
       if (_.isUndefined(value) || value === null) return null;
       if (value === exports.RETRY) {
@@ -391,8 +390,7 @@ function checkPings() {
     var start = Date.now();
     var pingRef = queue.ref.child(PING_KEY);
     return pingRef.transaction(function(item) {
-      if (item) return;
-      return {timestamp: start, _lease: {expiry: 1}};
+      return item || {timestamp: start, _lease: {expiry: 1}};
     }).then(function(item) {
       if (_.isUndefined(item)) return null;  // another process is currently pinging
       return waitUntilDeleted(pingRef).then(function() {
@@ -466,8 +464,7 @@ exports.extendLease = function(item, timeNeeded) {
       }
       var now = item.$ref.now();
       if (item2._lease.expiry <= now) throw new Error('Lease expired, unable to extend.');
-      if (item2._lease.expiry >= now + timeNeeded) return;
-      item2._lease.expiry += timeNeeded;
+      if (item2._lease.expiry < now + timeNeeded) item2._lease.expiry += timeNeeded;
       return item2;
     } catch (e) {
       e.firelease = {itemKey: item.$ref.toString(), timeNeeded: timeNeeded};
