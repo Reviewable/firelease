@@ -146,13 +146,16 @@ Task.prototype.prepare = function() {
 Task.prototype.process = function() {
   var startTimestamp;
   this.working = true;
+  var acquired;
   var transactionPromise = this.ref.transaction((function(item) {
+    acquired = true;
     if (!item || this.ref.key() === PING_KEY) return null;
     item._lease = item._lease || {};
     startTimestamp = this.queue.now();
     // console.log('txn  ', this.ref.key(), 'lease', item._lease, 'now', startTimestamp);
     // Check if another process beat us to it.
     if (item._lease.expiry && item._lease.expiry + this.queue.leaseDelay > startTimestamp) {
+      acquired = false;
       return item;
     }
     item._lease.time = this.queue.constrainLeaseDuration(item._lease.time * 2 || 0);
@@ -161,8 +164,8 @@ Task.prototype.process = function() {
     return this.queue.callPreprocess(item);
   }).bind(this));
   return transactionPromise.then((function(item) {
-    if (_.isUndefined(item)) this.queue.countTaskAcquired(false);
-    if (_.isUndefined(item) || item === null || this.ref.key() === PING_KEY) return;
+    if (!acquired) this.queue.countTaskAcquired(false);
+    if (!acquired || item === null || this.ref.key() === PING_KEY) return;
     if (!_.isObject(item)) throw new Error('item not an object: ' + item);
     Object.defineProperty(item, '$leaseTransaction', {value: transactionPromise.transaction});
     this.queue.countTaskAcquired(true);
@@ -389,10 +392,12 @@ function checkPings() {
   return Promise.all(_.map(queues, function(queue) {
     var start = Date.now();
     var pingRef = queue.ref.child(PING_KEY);
+    var pingFree;
     return pingRef.transaction(function(item) {
+      pingFree = !item;
       return item || {timestamp: start, _lease: {expiry: 1}};
     }).then(function(item) {
-      if (_.isUndefined(item)) return null;  // another process is currently pinging
+      if (!pingFree) return null;  // another process is currently pinging
       return waitUntilDeleted(pingRef).then(function() {
         var latency = Date.now() - start;
         return {
