@@ -184,6 +184,10 @@ Task.prototype.process = function() {
 
 Task.prototype.run = function(item, startTimestamp) {
   Object.defineProperty(item, '$ref', {value: this.ref});
+  Object.defineProperty(item, '$leaseTimeRemaining', {get: (function() {
+    if (!(item._lease && item._lease.expiry)) return 0;
+    return Math.max(0, item._lease.expiry - this.queue.now());
+  }).bind(this)});
   return this.queue.callWorker(item).finally((function() {
     var now = this.queue.now();
     if (now > item._lease.expiry) {
