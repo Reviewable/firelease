@@ -1,6 +1,6 @@
 {
   "name": "firelease",
-  "version": "0.5.4",
+  "version": "0.5.5",
   "description": "Firebase queue consumer for Node with at-least-once semantics",
   "main": "index.js",
   "scripts": {
@@ -30,6 +30,6 @@
     "lodash": "^3.10.1",
     "ms": "0.7.x",
     "nodefire": "0.5.x || 0.6.x",
-    "promise.prototype.finally": "^1.0.1"
+    "promise.prototype.finally": "^2.0.0"
   }
 }
