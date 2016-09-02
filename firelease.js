@@ -462,27 +462,28 @@ function waitUntilDeleted(ref) {
  */
 exports.extendLease = function(item, timeNeeded) {
   if (!(item && item._lease && item._lease.expiry)) throw new Error('Invalid task');
-  if (item._lease.extendLeaseInProgress) return Promise.resolve();
-  item._lease.extendLeaseInProgress = true;
   timeNeeded = duration(timeNeeded);
-  return item.$ref.transaction(function(item2) {
-    try {
-      if (!item2 || !item2._lease) throw new Error('Task disappeared, unable to extend lease.');
-      if (item._lease.expiry !== item2._lease.expiry) {
-        throw new Error('Task leased by another worker, unable to extend lease.');
+  return (item._lease.extendLeaseInProgress || Promise.resolve()).then(function() {
+    item._lease.extendLeaseInProgress = item.$ref.transaction(function(item2) {
+      try {
+        if (!item2 || !item2._lease) throw new Error('Task disappeared, unable to extend lease.');
+        if (item._lease.expiry !== item2._lease.expiry) {
+          throw new Error('Task leased by another worker, unable to extend lease.');
+        }
+        var now = item.$ref.now();
+        if (item2._lease.expiry <= now) throw new Error('Lease expired, unable to extend.');
+        if (item2._lease.expiry < now + timeNeeded) item2._lease.expiry += timeNeeded;
+        return item2;
+      } catch (e) {
+        e.firelease = {itemKey: item.$ref.toString(), timeNeeded: timeNeeded};
+        throw e;
       }
-      var now = item.$ref.now();
-      if (item2._lease.expiry <= now) throw new Error('Lease expired, unable to extend.');
-      if (item2._lease.expiry < now + timeNeeded) item2._lease.expiry += timeNeeded;
-      return item2;
-    } catch (e) {
-      e.firelease = {itemKey: item.$ref.toString(), timeNeeded: timeNeeded};
-      throw e;
-    }
-  }).then(function(item2) {
-    if (item2) item._lease.expiry = item2._lease.expiry;
-  }).finally(function() {
-    delete item._lease.extendLeaseInProgress;
+    }).then(function(item2) {
+      if (item2) item._lease.expiry = item2._lease.expiry;
+    }).finally(function() {
+      delete item._lease.extendLeaseInProgress;
+    });
+    return item._lease.extendLeaseInProgress;
   });
 };
 
