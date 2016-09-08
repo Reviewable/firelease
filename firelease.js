@@ -161,6 +161,7 @@ Task.prototype.process = function() {
     item._lease.time = this.queue.constrainLeaseDuration(item._lease.time * 2 || 0);
     item._lease.expiry = startTimestamp + item._lease.time;
     item._lease.attempts = (item._lease.attempts || 0) + 1;
+    if (!item._lease.initial) item._lease.initial = startTimestamp;
     return this.queue.callPreprocess(item);
   }).bind(this));
   return transactionPromise.then((function(item) {
