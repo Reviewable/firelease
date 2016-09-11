@@ -6,24 +6,30 @@ var NodeFire = require('nodefire');
 var ms = require('ms');
 var co = require('co');
 
+module.exports = {};
+
 /**
  * Return this from a worker to retry after the current lease expires, and to reset the lease
  * backoff to zero.
  */
-exports.RETRY = {};
+module.exports.RETRY = {};
 
 /**
  * Set this to the maximum number of concurrent tasks being executed at any moment across all
  * queues.
  * @type {number}
  */
-exports.globalMaxConcurrent = Number.MAX_VALUE;
+var globalMaxConcurrent = Number.MAX_VALUE;
+Object.defineProperty(module.exports, 'globalMaxConcurrent', {
+  get: function() {return globalMaxConcurrent;},
+  set: function(value) {globalMaxConcurrent = value; if (value) scanAll();}
+});
 
 /**
  * Default option values for all subsequent attachWorker calls.  See that function for details.
  * @type {Object}
  */
-exports.defaults = {
+module.exports.defaults = {
   maxConcurrent: Number.MAX_VALUE, bufferSize: 5, minLease: '30s', maxLease: '1h', leaseDelay: 0,
   maxLeaseDelay: 0, healthyPingLatency: '1.5s'
 };
@@ -33,7 +39,7 @@ exports.defaults = {
  * want to change it to something else in production.  The function should take a single exception
  * argument.
  */
-exports.captureError = function(error) {console.log(error.stack);};
+module.exports.captureError = function(error) {console.log(error.stack);};
 
 var PING_INTERVAL = ms('1m');
 var PING_KEY = 'ping';
@@ -93,7 +99,7 @@ var shutdownCallbacks = [];
  *        All of these values can also be wrapped in a promise or a generator, which will be dealt
  *        with appropriately.
  */
-exports.attachWorker = function(ref, options, worker) {
+module.exports.attachWorker = function(ref, options, worker) {
   queues.push(new Queue(ref, options, worker));
 };
 
@@ -174,7 +180,7 @@ Task.prototype.process = function() {
   }).bind(this)).catch((function(error) {
     console.log('Queue item', this.key, 'lease transaction error:', error.message);
     error.firelease = {itemKey: this.key, phase: 'leasing'};
-    exports.captureError(error);
+    module.exports.captureError(error);
     // Hardcoded retry in 1 second -- hard to do anything smarter, since we failed to update the
     // task in Firebase.
     setTimeout(this.queue.process.bind(this.queue, this), 1000);
@@ -216,7 +222,7 @@ Task.prototype.run = function(item, startTimestamp) {
       if (!item2) return null;
       var value = _.isFunction(result) ? result(item2) : result;
       if (_.isUndefined(value) || value === null) return null;
-      if (value === exports.RETRY) {
+      if (value === module.exports.RETRY) {
         if (item2._lease) delete item2._lease.time;
       } else if (_.isNumber(value) || _.isString(value)) {
         value = duration(value);
@@ -233,11 +239,11 @@ Task.prototype.run = function(item, startTimestamp) {
   }).bind(this), (function(error) {
     console.log('Queue item', this.key, 'processing error:', error.message);
     error.firelease = {itemKey: this.key, phase: 'processing'};
-    exports.captureError(error);
+    module.exports.captureError(error);
   }).bind(this)).catch((function(error) {
     console.log('Queue item', this.key, 'post-processing error:', error.message);
     error.firelease = {itemKey: this.key, phase: 'post-processing'};
-    exports.captureError(error);
+    module.exports.captureError(error);
   }).bind(this));
 };
 
@@ -247,7 +253,7 @@ function Queue(ref, options, worker) {
     worker = options;
     options = {};
   }
-  this.options = _.defaults({}, options, exports.defaults);
+  this.options = _.defaults({}, options, module.exports.defaults);
   this.options.minLease = duration(this.options.minLease);
   this.options.maxLease = duration(this.options.maxLease);
   this.options.minLeaseDelay = this.leaseDelay = duration(this.options.leaseDelay);
@@ -275,7 +281,7 @@ function Queue(ref, options, worker) {
 Queue.prototype.crash = function(error) {
   console.log('Queue worker', this.ref.toString(), 'interrupted:', error);
   error.firelease = {queue: this.ref.toString(), phase: 'crashing'};
-  exports.captureError(error);
+  module.exports.captureError(error);
   process.exit(1);
 };
 
@@ -308,7 +314,7 @@ Queue.prototype.removeTask = function(snap) {
 
 Queue.prototype.hasQuota = function() {
   return this.numConcurrent < this.options.maxConcurrent &&
-    globalNumConcurrent < exports.globalMaxConcurrent;
+    globalNumConcurrent < globalMaxConcurrent;
 };
 
 Queue.prototype.constrainLeaseDuration = function(time) {
@@ -329,7 +335,7 @@ Queue.prototype.process = function(task) {
     this.numConcurrent++;
     task.process().then((function() {
       if (task.removed) delete tasks[task.key];
-      if (globalNumConcurrent === exports.globalMaxConcurrent) {
+      if (globalNumConcurrent === globalMaxConcurrent) {
         scanAll();
       } else if (this.numConcurrent === this.options.maxConcurrent) {
         this.scan();
@@ -377,7 +383,7 @@ var pingIntervalHandle, pingCallback;
  * @param {number | string} interval The interval at which to ping queues, to both check the
  *        current response latency and make sure no tasks are stuck.  Defaults to 1 minute.
  */
-exports.pingQueues = function(callback, interval) {
+module.exports.pingQueues = function(callback, interval) {
   interval = interval && duration(interval) || PING_INTERVAL;
   if (pingIntervalHandle) clearInterval(pingIntervalHandle);
   pingCallback = callback;
@@ -385,7 +391,7 @@ exports.pingQueues = function(callback, interval) {
     checkPings().catch(function(error) {
       console.log('Error while pinging:', error);
       error.firelease = {phase: 'pinging'};
-      exports.captureError(error);
+      module.exports.captureError(error);
       pinging = false;
     });
   }, interval);
@@ -461,7 +467,7 @@ function waitUntilDeleted(ref) {
  * @return {Promise} A promise that will be resolved when the lease has been extended, and rejected
  *         if something went wrong and the worker should abort.
  */
-exports.extendLease = function(item, timeNeeded) {
+module.exports.extendLease = function(item, timeNeeded) {
   if (!(item && item._lease && item._lease.expiry)) throw new Error('Invalid task');
   timeNeeded = duration(timeNeeded);
   item._lease.extendLeasePromise =
@@ -493,11 +499,12 @@ exports.extendLease = function(item, timeNeeded) {
  * running tasks have completed.
  * @param {function} callback The callback to invoke when all tasks have completed.
  */
-exports.shutdown = function(callback) {
-  exports.globalMaxConcurrent = 0;
-  shutdownCallbacks.push(callback);
+module.exports.shutdown = function(callback) {
+  globalMaxConcurrent = 0;
+  if (callback) shutdownCallbacks.push(callback);
   invokeShutdownCallbacks();
 };
+
 
 function invokeShutdownCallbacks() {
   if (!globalNumConcurrent && shutdownCallbacks.length) {
@@ -506,7 +513,7 @@ function invokeShutdownCallbacks() {
         shutdownCallbacks[i]();
       } catch(e) {
         e.message = 'Firelease shutdown callback failed: ' + e.message;
-        exports.captureError(e);
+        module.exports.captureError(e);
       }
     }
     shutdownCallbacks = [];

@@ -10,17 +10,13 @@
   "maxlen": 100,
   "newcap": true,
   "noarg": true,
+  "node": true,
   "quotmark": "single",
   "strict": true,
   "trailing": true,
   "undef": true,
   "unused": "vars",
   "globals": {
-    "require": false,
-    "exports": false,
-    "module": false,
-    "global": false,
-    "process": false,
-    "__dirname": false
+    "Promise": false
   }
 }
