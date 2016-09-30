@@ -1,6 +1,6 @@
 'use strict';
 
-require('promise.prototype.finally');
+require('promise.prototype.finally').shim();
 var _ = require('lodash');
 var NodeFire = require('nodefire');
 var ms = require('ms');
@@ -22,7 +22,11 @@ module.exports.RETRY = {};
 var globalMaxConcurrent = Number.MAX_VALUE;
 Object.defineProperty(module.exports, 'globalMaxConcurrent', {
   get: function() {return globalMaxConcurrent;},
-  set: function(value) {globalMaxConcurrent = value; if (value) scanAll();}
+  set: function(value) {
+    if (value && !globalMaxConcurrent) initShutdownPromise();
+    globalMaxConcurrent = value;
+    if (value) scanAll();
+  }
 });
 
 /**
@@ -47,7 +51,7 @@ var PING_KEY = 'ping';
 var queues = [];
 var tasks = {};
 var globalNumConcurrent = 0;
-var shutdownCallbacks = [];
+var shutdownResolve, shutdownPromise;
 
 /**
  * Attaches a worker function to consume tasks from a queue.  You should normally attach no more
@@ -183,6 +187,7 @@ Task.prototype.process = function() {
     module.exports.captureError(error);
     // Hardcoded retry in 1 second -- hard to do anything smarter, since we failed to update the
     // task in Firebase.
+    this.expiry = 0;
     setTimeout(this.queue.process.bind(this.queue, this), 1000);
   }).bind(this)).then((function() {
     this.working = false;
@@ -342,7 +347,7 @@ Queue.prototype.process = function(task) {
       }
       globalNumConcurrent--;
       this.numConcurrent--;
-      invokeShutdownCallbacks();
+      if (!globalMaxConcurrent && !globalNumConcurrent) shutdownResolve();
     }).bind(this));
   }
 };
@@ -501,21 +506,14 @@ module.exports.extendLease = function(item, timeNeeded) {
  */
 module.exports.shutdown = function(callback) {
   globalMaxConcurrent = 0;
-  if (callback) shutdownCallbacks.push(callback);
-  invokeShutdownCallbacks();
+  if (!globalNumConcurrent) shutdownResolve();
+  return shutdownPromise;
 };
 
-
-function invokeShutdownCallbacks() {
-  if (!globalNumConcurrent && shutdownCallbacks.length) {
-    for (var i = 0; i < shutdownCallbacks.length; i++) {
-      try {
-        shutdownCallbacks[i]();
-      } catch(e) {
-        e.message = 'Firelease shutdown callback failed: ' + e.message;
-        module.exports.captureError(e);
-      }
-    }
-    shutdownCallbacks = [];
-  }
+function initShutdownPromise() {
+  shutdownPromise = new Promise(function(resolve, reject) {
+    shutdownResolve = resolve;
+  });
 }
+initShutdownPromise();
+
