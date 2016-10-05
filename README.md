@@ -88,12 +88,9 @@ constraints along the way and throws an error if the worker needs to abort.
    rejected if something went wrong and the worker should abort.
 
 
-```function shutdown(callback)```
+```function shutdown()```
 
-Shuts down firelease by refusing to take new tasks, and invokes the callback once all currently running tasks have completed.
-
- * `@param {function} callback` The callback to invoke when all tasks have completed.
-
+Shuts down firelease by refusing to take new tasks, and returns a promise that resolves once all currently running tasks have completed.
 
 There are also some module-level settings you can change:
 
