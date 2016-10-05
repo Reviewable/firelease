@@ -23,9 +23,12 @@ var globalMaxConcurrent = Number.MAX_VALUE;
 Object.defineProperty(module.exports, 'globalMaxConcurrent', {
   get: function() {return globalMaxConcurrent;},
   set: function(value) {
-    if (value && !globalMaxConcurrent) initShutdownPromise();
     globalMaxConcurrent = value;
-    if (value) scanAll();
+    if (value) {
+      shutdownReject(new Error('Queues restarted'));
+      shutdownPromise = shutdownResolve = shutdownReject = null;
+      scanAll();
+    }
   }
 });
 
@@ -51,7 +54,7 @@ var PING_KEY = 'ping';
 var queues = [];
 var tasks = {};
 var globalNumConcurrent = 0;
-var shutdownResolve, shutdownPromise;
+var shutdownResolve, shutdownReject, shutdownPromise;
 
 /**
  * Attaches a worker function to consume tasks from a queue.  You should normally attach no more
@@ -347,7 +350,7 @@ Queue.prototype.process = function(task) {
       }
       globalNumConcurrent--;
       this.numConcurrent--;
-      if (!globalMaxConcurrent && !globalNumConcurrent) shutdownResolve();
+      if (shutdownResolve && !globalMaxConcurrent && !globalNumConcurrent) shutdownResolve();
     }).bind(this));
   }
 };
@@ -506,14 +509,13 @@ module.exports.extendLease = function(item, timeNeeded) {
  */
 module.exports.shutdown = function(callback) {
   globalMaxConcurrent = 0;
+  if (!shutdownPromise) {
+    shutdownPromise = new Promise(function(resolve, reject) {
+      shutdownResolve = resolve;
+      shutdownReject = reject;
+    });
+  }
   if (!globalNumConcurrent) shutdownResolve();
   return shutdownPromise;
 };
-
-function initShutdownPromise() {
-  shutdownPromise = new Promise(function(resolve, reject) {
-    shutdownResolve = resolve;
-  });
-}
-initShutdownPromise();
 
