@@ -4,7 +4,6 @@ require('promise.prototype.finally').shim();
 var _ = require('lodash');
 var NodeFire = require('nodefire');
 var ms = require('ms');
-var co = require('co');
 
 module.exports = {};
 
@@ -363,9 +362,10 @@ Queue.prototype.callPreprocess = function(item) {
 Queue.prototype.callWorker = function(item) {
   try {
     var result = this.worker(item);
-    if (result && typeof result.next === 'function' && typeof result.throw === 'function') {
+    if (result && typeof result.next === 'function' && typeof result.throw === 'function' &&
+        Promise.co) {
       // Got a generator, let's co-ify it nicely to capture errors.
-      return co(result);
+      return Promise.co(result);
     } else {
       return Promise.resolve(result);
     }

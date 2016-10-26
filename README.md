@@ -8,6 +8,8 @@ API
 
 All durations can be specified as either a human-readable string, or a number of milliseconds.
 
+To use generators, make sure to set `Promise.co` to a `co`-compatible function.
+
 The module exposes these functions:
 
 ```function attachWorker(ref, options, worker)```
