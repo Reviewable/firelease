@@ -185,7 +185,7 @@ Task.prototype.process = function() {
     return this.run(item, startTimestamp);
   }).bind(this)).catch((function(error) {
     console.log('Queue item', this.key, 'lease transaction error:', error.message);
-    error.firelease = {itemKey: this.key, phase: 'leasing'};
+    error.firelease = _.extend(error.firelease || {}, {itemKey: this.key, phase: 'leasing'});
     module.exports.captureError(error);
     // Hardcoded retry in 1 second -- hard to do anything smarter, since we failed to update the
     // task in Firebase.
@@ -245,11 +245,12 @@ Task.prototype.run = function(item, startTimestamp) {
     });
   }).bind(this), (function(error) {
     console.log('Queue item', this.key, 'processing error:', error.message);
-    error.firelease = {itemKey: this.key, phase: 'processing'};
+    error.firelease = _.extend(error.firelease || {} , {itemKey: this.key, phase: 'processing'});
     module.exports.captureError(error);
   }).bind(this)).catch((function(error) {
     console.log('Queue item', this.key, 'post-processing error:', error.message);
-    error.firelease = {itemKey: this.key, phase: 'post-processing'};
+    error.firelease =
+      _.extend(error.firelease || {} , {itemKey: this.key, phase: 'post-processing'});
     module.exports.captureError(error);
   }).bind(this));
 };
@@ -287,7 +288,8 @@ function Queue(ref, options, worker) {
 
 Queue.prototype.crash = function(error) {
   console.log('Queue worker', this.ref.toString(), 'interrupted:', error);
-  error.firelease = {queue: this.ref.toString(), phase: 'crashing'};
+  error.firelease =
+    _.extend(error.firelease || {}, {queue: this.ref.toString(), phase: 'crashing'});
   module.exports.captureError(error);
   process.exit(1);
 };
@@ -398,7 +400,7 @@ module.exports.pingQueues = function(callback, interval) {
   pingIntervalHandle = setInterval(function() {
     checkPings().catch(function(error) {
       console.log('Error while pinging:', error);
-      error.firelease = {phase: 'pinging'};
+      error.firelease = _.extend(error.firelease || {}, {phase: 'pinging'});
       module.exports.captureError(error);
       pinging = false;
     });
@@ -480,21 +482,31 @@ module.exports.extendLease = function(item, timeNeeded) {
   timeNeeded = duration(timeNeeded);
   item._lease.extendLeasePromise =
     (item._lease.extendLeasePromise || Promise.resolve()).catch().then(function() {
+      var error;
       return item.$ref.transaction(function(item2) {
-        try {
-          if (!item2 || !item2._lease) throw new Error('Task disappeared, unable to extend lease.');
-          if (item._lease.expiry !== item2._lease.expiry) {
-            throw new Error('Task leased by another worker, unable to extend lease.');
-          }
-          var now = item.$ref.now();
-          if (item2._lease.expiry <= now) throw new Error('Lease expired, unable to extend.');
-          if (item2._lease.expiry < now + timeNeeded) item2._lease.expiry += timeNeeded;
-          return item2;
-        } catch (e) {
-          e.firelease = {itemKey: item.$ref.toString(), timeNeeded: timeNeeded};
-          throw e;
+        error = null;
+        var now = item.$ref.now();
+        if (!item2) {
+          error = new Error('Task disappeared (' + item2 + '), unable to extend lease.');
+          item2 = null;  // make sure we attempt a write to force sha check
+        } else if (!item2._lease) {
+          error = new Error('Task recreated, unable to extend lease.');
+        } else if (item._lease.expiry !== item2._lease.expiry) {
+          error = new Error('Task leased by another worker, unable to extend lease.');
+        } else if (item2._lease.expiry <= now) {
+          error = new Error('Lease expired, unable to extend.');
+        } else {
+          // Expiry is monotonically increasing, so safe to do early abort if it's high enough.
+          if (item2._lease.expiry >= now + timeNeeded) return;
+          item2._lease.expiry += timeNeeded;
         }
+        return item2;
       }).then(function(item2) {
+        if (error) {
+          error.firelease = _.extend(
+            error.firelease || {}, {itemKey: item.$ref.toString(), timeNeeded: timeNeeded});
+          return Promise.reject(error);
+        }
         if (item2) item._lease.expiry = item2._lease.expiry;
       });
     });
