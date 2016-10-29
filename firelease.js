@@ -488,13 +488,17 @@ module.exports.extendLease = function(item, timeNeeded) {
         var now = item.$ref.now();
         if (!item2) {
           error = new Error('Task disappeared (' + item2 + '), unable to extend lease.');
+          error.firelease = {code: 'gone'};
           item2 = null;  // make sure we attempt a write to force sha check
         } else if (!item2._lease) {
           error = new Error('Task recreated, unable to extend lease.');
+          error.firelease = {code: 'recreated'};
         } else if (item._lease.expiry !== item2._lease.expiry) {
           error = new Error('Task leased by another worker, unable to extend lease.');
+          error.firelease = {code: 'stolen'};
         } else if (item2._lease.expiry <= now) {
           error = new Error('Lease expired, unable to extend.');
+          error.firelease = {code: 'lost'};
         } else {
           // Expiry is monotonically increasing, so safe to do early abort if it's high enough.
           if (item2._lease.expiry >= now + timeNeeded) return;
