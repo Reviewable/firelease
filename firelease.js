@@ -422,7 +422,7 @@ function checkPings() {
       return waitUntilDeleted(pingRef).then(function() {
         var latency = Date.now() - start;
         return {
-          latency: latency, healthy: latency < queue.options.healthyPingLatency,
+          queue: queue, latency: latency, healthy: latency < queue.options.healthyPingLatency,
           leaseDelay: queue.leaseDelay, tasksAcquired: queue.tasksAcquired
         };
       }, function() {
@@ -435,6 +435,8 @@ function checkPings() {
       // Backup scan in case tasks are stuck on a queue due to bugs.
       scanAll();
       if (pingCallback) {
+        var sickQueueKeys = _.chain(results)
+          .reject('healthy').map(function(item) {return item.queue.ref.key();}).value();
         var delays = _.chain(results).pluck('leaseDelay').sortBy().value();
         var delaysMedian = delays.length % 2 ?
           delays[Math.floor(delays.length / 2)] :
@@ -442,6 +444,7 @@ function checkPings() {
             delays[Math.ceil(delays.length / 2)]) / 2);
         pingCallback({
           healthy: _.every(results, 'healthy'),
+          sickQueues: sickQueueKeys,
           maxLatency: _.max(_.pluck(results, 'latency')),
           tasksAcquired:
             _.reduce(results, function(sum, result) {return sum + result.tasksAcquired;}, 0),
