@@ -482,41 +482,52 @@ function waitUntilDeleted(ref) {
  */
 module.exports.extendLease = function(item, timeNeeded) {
   if (!(item && item._lease && item._lease.expiry)) throw new Error('Invalid task');
-  timeNeeded = duration(timeNeeded);
-  item._lease.extendLeasePromise =
-    (item._lease.extendLeasePromise || Promise.resolve()).catch().then(function() {
-      var error;
-      return item.$ref.transaction(function(item2) {
-        error = null;
-        var now = item.$ref.now();
-        if (!item2) {
-          error = new Error('Task disappeared (' + item2 + '), unable to extend lease.');
-          error.firelease = {code: 'gone'};
-          item2 = null;  // make sure we attempt a write to force sha check
-        } else if (!item2._lease) {
-          error = new Error('Task recreated, unable to extend lease.');
-          error.firelease = {code: 'recreated'};
-        } else if (item._lease.expiry !== item2._lease.expiry) {
-          error = new Error('Task leased by another worker, unable to extend lease.');
-          error.firelease = {code: 'stolen'};
-        } else if (item2._lease.expiry <= now) {
-          error = new Error('Lease expired, unable to extend.');
-          error.firelease = {code: 'lost'};
-        } else {
-          // Expiry is monotonically increasing, so safe to do early abort if it's high enough.
-          if (item2._lease.expiry >= now + timeNeeded) return;
-          item2._lease.expiry += timeNeeded;
-        }
-        return item2;
-      }).then(function(item2) {
-        if (error) {
-          error.firelease = _.extend(
-            error.firelease || {}, {itemKey: item.$ref.toString(), timeNeeded: timeNeeded});
-          return Promise.reject(error);
-        }
-        if (item2) item._lease.expiry = item2._lease.expiry;
-      });
+  item._lease.timeNeeded = Math.max(item._lease.timeNeeded || 0, duration(timeNeeded));
+  if (!item._lease.extendLeasePromise) {
+    var error, timeNeededUsed;
+    item._lease.extendLeasePromise = item.$ref.transaction(function(item2) {
+      error = null;
+      timeNeededUsed = null;
+      var now = item.$ref.now();
+      if (!item2) {
+        error = new Error('Task disappeared (' + item2 + '), unable to extend lease.');
+        error.firelease = {code: 'gone'};
+        item2 = null;  // make sure we attempt a write to force sha check
+      } else if (!item2._lease) {
+        error = new Error('Task recreated, unable to extend lease.');
+        error.firelease = {code: 'recreated'};
+      } else if (item._lease.expiry !== item2._lease.expiry) {
+        error = new Error('Task leased by another worker, unable to extend lease.');
+        error.firelease = {code: 'stolen'};
+      } else if (item2._lease.expiry <= now) {
+        error = new Error('Lease expired, unable to extend.');
+        error.firelease = {code: 'lost'};
+      } else {
+        timeNeededUsed = item._lease.timeNeeded;
+        // Expiry is monotonically increasing, so safe to do early abort if it's high enough.
+        if (item2._lease.expiry >= now + timeNeededUsed) return;
+        item2._lease.expiry += timeNeededUsed;
+      }
+      return item2;
+    }).then(function(item2) {
+      var moreTimeNeeded;
+      if (item._lease) {
+        if (item._lease.timeNeeded > timeNeededUsed) moreTimeNeeded = item._lease.timeNeeded;
+        delete item._lease.extendLeasePromise;
+        delete item._lease.timeNeeded;
+      }
+      if (error) {
+        error.firelease = _.extend(
+          error.firelease || {}, {itemKey: item.$ref.toString(), timeNeeded: timeNeeded});
+        return Promise.reject(error);
+      }
+      if (item2 && item._lease) item._lease.expiry = item2._lease.expiry;
+      if (moreTimeNeeded) {
+        // If an extendLease raced with the transaction then retry it.
+        return module.exports.extendLease(item, moreTimeNeeded);
+      }
     });
+  }
   return item._lease.extendLeasePromise;
 };
 
