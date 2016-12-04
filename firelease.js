@@ -246,6 +246,7 @@ Task.prototype.run = function(item, startTimestamp) {
   }).bind(this), (function(error) {
     console.log('Queue item', this.key, 'processing error:', error.message);
     error.firelease = _.extend(error.firelease || {} , {itemKey: this.key, phase: 'processing'});
+    error.level = 'warning';
     module.exports.captureError(error);
   }).bind(this)).catch((function(error) {
     console.log('Queue item', this.key, 'post-processing error:', error.message);
@@ -401,6 +402,7 @@ module.exports.pingQueues = function(callback, interval) {
     checkPings().catch(function(error) {
       console.log('Error while pinging:', error);
       error.firelease = _.extend(error.firelease || {}, {phase: 'pinging'});
+      error.level = 'warning';
       module.exports.captureError(error);
       pinging = false;
     });
