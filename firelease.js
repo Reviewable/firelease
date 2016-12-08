@@ -246,7 +246,7 @@ Task.prototype.run = function(item, startTimestamp) {
   }).bind(this), (function(error) {
     console.log('Queue item', this.key, 'processing error:', error.message);
     error.firelease = _.extend(error.firelease || {} , {itemKey: this.key, phase: 'processing'});
-    error.level = 'warning';
+    if (!error.level) error.level = 'warning';
     module.exports.captureError(error);
   }).bind(this)).catch((function(error) {
     console.log('Queue item', this.key, 'post-processing error:', error.message);
