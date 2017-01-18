@@ -176,7 +176,7 @@ Task.prototype.process = function() {
     item._lease.attempts = (item._lease.attempts || 0) + 1;
     if (!item._lease.initial) item._lease.initial = startTimestamp;
     return this.queue.callPreprocess(item);
-  }).bind(this), {detectStuck: 10});
+  }).bind(this), {detectStuck: 15, prefetchValue: false});
   return transactionPromise.then((function(item) {
     if (!acquired) this.queue.countTaskAcquired(false);
     if (!acquired || item === null || this.ref.key() === PING_KEY) return;
@@ -188,7 +188,7 @@ Task.prototype.process = function() {
     console.log('Queue item', this.key, 'lease transaction error:', error.message);
     error.firelease = _.extend(error.firelease || {}, {itemKey: this.key, phase: 'leasing'});
     module.exports.captureError(error);
-    if (error.message === 'stuck') this.resetQueueListeners();
+    if (/\bstuck$/.test(error.message)) this.queue.resetQueueListeners();
     // Hardcoded retry in 1 second -- hard to do anything smarter, since we failed to update the
     // task in Firebase.
     this.expiry = 0;
@@ -277,14 +277,18 @@ function Queue(ref, options, worker) {
   this.ref = ref;
   this.topRef = ref.orderByChild('_lease/expiry').limitToFirst(this.options.bufferSize);
 
-  // Need each queue's scan function to be debounced separately.
-  this.scan = _.debounce(_.bind(this.scan, this), 100);
-
+  // Call before wrapping in debounce.
   this.resetQueueListeners(true);
+
+  // Need each queue's scan and resetQueueListeners function to be debounced separately.
+  this.scan = _.debounce(_.bind(this.scan, this), 100);
+  this.resetQueueListeners = _.debounce(
+    _.bind(this.resetQueueListeners, this), 250, {leading: true, trailing: false, maxWait: 500});
 }
 
 Queue.prototype.resetQueueListeners = function(addOnly) {
   if (!addOnly) {
+    console.log('Resetting queue listeners:', this.ref.toString());
     this.topRef.off('child_added', this.addTask, this);
     this.topRef.off('child_removed', this.removeTask, this);
     this.topRef.off('child_moved', this.addTask, this);
