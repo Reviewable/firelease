@@ -176,7 +176,7 @@ Task.prototype.process = function() {
     item._lease.attempts = (item._lease.attempts || 0) + 1;
     if (!item._lease.initial) item._lease.initial = startTimestamp;
     return this.queue.callPreprocess(item);
-  }, {detectStuck: 10}).bind(this));
+  }).bind(this), {detectStuck: 10});
   return transactionPromise.then((function(item) {
     if (!acquired) this.queue.countTaskAcquired(false);
     if (!acquired || item === null || this.ref.key() === PING_KEY) return;
