@@ -39,7 +39,7 @@ Object.defineProperty(module.exports, 'globalMaxConcurrent', {
   set: function(value) {
     globalMaxConcurrent = value;
     if (value) {
-      shutdownReject(new Error('Queues restarted'));
+      if (shutdownReject) shutdownReject(new Error('Queues restarted'));
       shutdownPromise = shutdownResolve = shutdownReject = null;
       scanAll();
     }
@@ -367,7 +367,13 @@ Queue.prototype.process = function(task) {
       globalNumConcurrent--;
       this.numConcurrent--;
       if (shutdownResolve && !globalMaxConcurrent && !globalNumConcurrent) shutdownResolve();
-    }).bind(this));
+      if (!globalMaxConcurrent) {
+        console.log('Queues draining, tasks in progress: ' + globalNumConcurrent);
+      }
+    }).bind(this)).catch(function(error) {
+      error.message = 'Unexpected error in Queue.process: ' + error.message;
+      module.exports.captureError(error);
+    });
   }
 };
 
