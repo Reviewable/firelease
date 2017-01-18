@@ -5,6 +5,21 @@ var _ = require('lodash');
 var NodeFire = require('nodefire');
 var ms = require('ms');
 
+var PING_INTERVAL = ms('1m');
+var PING_KEY = 'ping';
+
+var queues = [];
+var tasks = {};
+var globalNumConcurrent = 0;
+var shutdownResolve, shutdownReject, shutdownPromise;
+
+var scanAll = _.debounce(function() {
+  _.each(tasks, function(task) {
+    task.queue.process(task);
+  });
+}, 100);
+
+
 module.exports = {};
 
 /**
@@ -46,14 +61,6 @@ module.exports.defaults = {
  * argument.
  */
 module.exports.captureError = function(error) {console.log(error.stack);};
-
-var PING_INTERVAL = ms('1m');
-var PING_KEY = 'ping';
-
-var queues = [];
-var tasks = {};
-var globalNumConcurrent = 0;
-var shutdownResolve, shutdownReject, shutdownPromise;
 
 /**
  * Attaches a worker function to consume tasks from a queue.  You should normally attach no more
@@ -113,12 +120,6 @@ function duration(value) {
   if (_.isNumber(value)) return value;
   return ms(value);
 }
-
-var scanAll = _.debounce(function() {
-  _.each(tasks, function(task) {
-    task.queue.process(task);
-  });
-}, 100);
 
 
 function Task(queue, snap) {
