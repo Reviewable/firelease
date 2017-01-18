@@ -28,7 +28,7 @@
   "dependencies": {
     "lodash": "^3.10.1",
     "ms": "0.7.x",
-    "nodefire": "0.7.x",
+    "nodefire": "^0.8.0",
     "promise.prototype.finally": "^2.0.1"
   }
 }

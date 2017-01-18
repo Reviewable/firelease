@@ -176,7 +176,7 @@ Task.prototype.process = function() {
     item._lease.attempts = (item._lease.attempts || 0) + 1;
     if (!item._lease.initial) item._lease.initial = startTimestamp;
     return this.queue.callPreprocess(item);
-  }).bind(this));
+  }, {detectStuck: 10}).bind(this));
   return transactionPromise.then((function(item) {
     if (!acquired) this.queue.countTaskAcquired(false);
     if (!acquired || item === null || this.ref.key() === PING_KEY) return;
@@ -188,10 +188,11 @@ Task.prototype.process = function() {
     console.log('Queue item', this.key, 'lease transaction error:', error.message);
     error.firelease = _.extend(error.firelease || {}, {itemKey: this.key, phase: 'leasing'});
     module.exports.captureError(error);
+    if (error.message === 'stuck') this.resetQueueListeners();
     // Hardcoded retry in 1 second -- hard to do anything smarter, since we failed to update the
     // task in Firebase.
     this.expiry = 0;
-    setTimeout(this.queue.process.bind(this.queue, this), 1000);
+    setTimeout(this.queue.scan, 1000);
   }).bind(this)).then((function() {
     this.working = false;
   }).bind(this));
@@ -274,19 +275,31 @@ function Queue(ref, options, worker) {
   this.tasksAcquired = 0;
   this.worker = worker;
   this.ref = ref;
+  this.topRef = ref.orderByChild('_lease/expiry').limitToFirst(this.options.bufferSize);
 
   // Need each queue's scan function to be debounced separately.
-  this.scan = _.debounce(function() {
-    _.each(tasks, function(task) {
-      if (task.queue === this) task.queue.process(task);
-    }, this);
-  }, 100);
+  this.scan = _.debounce(_.bind(this.scan, this), 100);
 
-  var top = ref.orderByChild('_lease/expiry').limitToFirst(this.options.bufferSize);
-  top.on('child_added', this.addTask.bind(this), this.crash.bind(this));
-  top.on('child_removed', this.removeTask.bind(this), this.crash.bind(this));
-  top.on('child_moved', this.addTask.bind(this), this.crash.bind(this));
+  this.resetQueueListeners();
 }
+
+Queue.prototype.resetQueueListeners = function() {
+  this.topRef.off('child_added', this.addTask, this);
+  this.topRef.off('child_removed', this.removeTask, this);
+  this.topRef.off('child_moved', this.addTask, this);
+  var taskKeys = _(tasks)
+    .map(function(task, key) {return task.queue === this ? key : null;}, this).compact().value();
+  _.each(taskKeys, function(key) {delete tasks[key];});
+  this.topRef.on('child_added', this.addTask, this.crash, this);
+  this.topRef.on('child_removed', this.removeTask, this.crash, this);
+  this.topRef.on('child_moved', this.addTask, this.crash, this);
+};
+
+Queue.prototype.scan = function() {
+  _.each(tasks, function(task) {
+    if (task.queue === this) task.queue.process(task);
+  }, this);
+};
 
 Queue.prototype.crash = function(error) {
   console.log('Queue worker', this.ref.toString(), 'interrupted:', error);
