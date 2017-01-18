@@ -280,16 +280,18 @@ function Queue(ref, options, worker) {
   // Need each queue's scan function to be debounced separately.
   this.scan = _.debounce(_.bind(this.scan, this), 100);
 
-  this.resetQueueListeners();
+  this.resetQueueListeners(true);
 }
 
-Queue.prototype.resetQueueListeners = function() {
-  this.topRef.off('child_added', this.addTask, this);
-  this.topRef.off('child_removed', this.removeTask, this);
-  this.topRef.off('child_moved', this.addTask, this);
-  var taskKeys = _(tasks)
-    .map(function(task, key) {return task.queue === this ? key : null;}, this).compact().value();
-  _.each(taskKeys, function(key) {delete tasks[key];});
+Queue.prototype.resetQueueListeners = function(addOnly) {
+  if (!addOnly) {
+    this.topRef.off('child_added', this.addTask, this);
+    this.topRef.off('child_removed', this.removeTask, this);
+    this.topRef.off('child_moved', this.addTask, this);
+    var taskKeys = _(tasks)
+      .map(function(task, key) {return task.queue === this ? key : null;}, this).compact().value();
+    _.each(taskKeys, function(key) {delete tasks[key];});
+  }
   this.topRef.on('child_added', this.addTask, this.crash, this);
   this.topRef.on('child_removed', this.removeTask, this.crash, this);
   this.topRef.on('child_moved', this.addTask, this.crash, this);
