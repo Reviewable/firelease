@@ -246,7 +246,7 @@ Task.prototype.run = function(item, startTimestamp) {
         throw new Error('Unexpected return value from worker: ' + value);
       }
       return item2;
-    }).then(function(item2) {
+    }, {prefetchValue: false}).then(function(item2) {
       if (item2) item._lease = item2._lease;
     });
   }).bind(this), (function(error) {
@@ -291,6 +291,7 @@ function Queue(ref, options, worker) {
 }
 
 Queue.prototype.resetQueueListeners = function(addOnly) {
+  NodeFire.enableFirebaseLogging(true);
   if (!addOnly) {
     this.topRef.off('child_added', this.addTask, this);
     this.topRef.off('child_removed', this.removeTask, this);
@@ -299,11 +300,12 @@ Queue.prototype.resetQueueListeners = function(addOnly) {
       return task.queue === this ? key : null;
     }, this).compact().value();
     _.each(taskKeys, function(key) {delete tasks[key];});
-    console.log('Resetting queue listeners: %s', this.ref.toString());
+    console.log('Resetting queue listeners:', this.ref.toString());
   }
   this.topRef.on('child_added', this.addTask, this.crash, this);
   this.topRef.on('child_removed', this.removeTask, this.crash, this);
   this.topRef.on('child_moved', this.addTask, this.crash, this);
+  NodeFire.enableFirebaseLogging(false);
 };
 
 Queue.prototype.scan = function() {
@@ -450,7 +452,7 @@ function checkPings() {
     return pingRef.transaction(function(item) {
       pingFree = !item;
       return item || {timestamp: start, _lease: {expiry: 1}};
-    }).then(function(item) {
+    }, {prefetchValue: false}).then(function(item) {
       if (!pingFree) return null;  // another process is currently pinging
       return waitUntilDeleted(pingRef).then(function() {
         var latency = Date.now() - start;
@@ -542,7 +544,7 @@ module.exports.extendLease = function(item, timeNeeded) {
         item2._lease.expiry += timeNeededUsed;
       }
       return item2;
-    }).then(function(item2) {
+    }, {prefetchValue: false}).then(function(item2) {
       var moreTimeNeeded;
       if (item._lease) {
         if (item._lease.timeNeeded > timeNeededUsed) moreTimeNeeded = item._lease.timeNeeded;
