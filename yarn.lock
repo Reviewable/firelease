@@ -89,9 +89,9 @@ ms@0.7.x:
   version "0.7.2"
   resolved "https://registry.yarnpkg.com/ms/-/ms-0.7.2.tgz#ae25cf2512b3885a1d95d7f037868d8431124765"
 
-nodefire@^0.8.2:
-  version "0.8.2"
-  resolved "https://registry.yarnpkg.com/nodefire/-/nodefire-0.8.2.tgz#e8a0f6acc826d993ede581c7ef5d1400a78e5f70"
+nodefire@^0.8.3:
+  version "0.8.3"
+  resolved "https://registry.yarnpkg.com/nodefire/-/nodefire-0.8.3.tgz#cfb6d7ee65c0392602b43ce16f1a44da6d757ace"
   dependencies:
     clone "^2.1.0"
     firebase "^2.2"

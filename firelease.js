@@ -163,20 +163,21 @@ Task.prototype.process = function() {
   var transactionPromise = this.ref.transaction((function(item) {
     acquired = true;
     if (!item || this.ref.key() === PING_KEY) return null;
-    item._lease = item._lease || {};
     startTimestamp = this.queue.now();
     // console.log('txn  ', this.ref.key(), 'lease', item._lease, 'now', startTimestamp);
     // Check if another process beat us to it.
-    if (item._lease.expiry && item._lease.expiry + this.queue.leaseDelay > startTimestamp) {
+    if (item._lease && item._lease.expiry &&
+        item._lease.expiry + this.queue.leaseDelay > startTimestamp) {
       acquired = false;
       return item;
     }
+    item._lease = item._lease || {};
     item._lease.time = this.queue.constrainLeaseDuration(item._lease.time * 2 || 0);
     item._lease.expiry = startTimestamp + item._lease.time;
     item._lease.attempts = (item._lease.attempts || 0) + 1;
     if (!item._lease.initial) item._lease.initial = startTimestamp;
     return this.queue.callPreprocess(item);
-  }).bind(this), {detectStuck: 15, prefetchValue: false});
+  }).bind(this), {detectStuck: 12, prefetchValue: false});
   return transactionPromise.then((function(item) {
     if (!acquired) this.queue.countTaskAcquired(false);
     if (!acquired || item === null || this.ref.key() === PING_KEY) return;
@@ -188,7 +189,10 @@ Task.prototype.process = function() {
     console.log('Queue item', this.key, 'lease transaction error:', error.message);
     error.firelease = _.extend(error.firelease || {}, {itemKey: this.key, phase: 'leasing'});
     module.exports.captureError(error);
-    if (/\bstuck$/.test(error.message)) this.queue.resetQueueListeners();
+    if (/\b(stuck|maxretry)$/.test(error.message)) {
+      this.ref.uncache();
+      this.queue.resetQueueListeners();
+    }
     // Hardcoded retry in 1 second -- hard to do anything smarter, since we failed to update the
     // task in Firebase.
     this.expiry = 0;
@@ -288,13 +292,14 @@ function Queue(ref, options, worker) {
 
 Queue.prototype.resetQueueListeners = function(addOnly) {
   if (!addOnly) {
-    console.log('Resetting queue listeners:', this.ref.toString());
     this.topRef.off('child_added', this.addTask, this);
     this.topRef.off('child_removed', this.removeTask, this);
     this.topRef.off('child_moved', this.addTask, this);
-    var taskKeys = _(tasks)
-      .map(function(task, key) {return task.queue === this ? key : null;}, this).compact().value();
+    var taskKeys = _(tasks).map(function(task, key) {
+      return task.queue === this ? key : null;
+    }, this).compact().value();
     _.each(taskKeys, function(key) {delete tasks[key];});
+    console.log('Resetting queue listeners: %s', this.ref.toString());
   }
   this.topRef.on('child_added', this.addTask, this.crash, this);
   this.topRef.on('child_removed', this.removeTask, this.crash, this);
