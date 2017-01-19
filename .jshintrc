@@ -4,6 +4,7 @@
   "camelcase": true,
   "devel": true,
   "eqeqeq": true,
+  "esnext": true,
   "indent": 2,
   "globalstrict": true,
   "latedef": "nofunc",
@@ -15,8 +16,5 @@
   "strict": true,
   "trailing": true,
   "undef": true,
-  "unused": "vars",
-  "globals": {
-    "Promise": false
-  }
+  "unused": "vars"
 }
