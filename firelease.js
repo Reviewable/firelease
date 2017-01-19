@@ -582,3 +582,10 @@ module.exports.shutdown = function(callback) {
   return shutdownPromise;
 };
 
+
+/**
+ * Lists the URLs of all tasks that are currently being worked on.
+ */
+module.exports.listTasksInProgress = function() {
+  return _(tasks).map(function(task, key) {return task.working ? key : null;}).compact().value();
+};

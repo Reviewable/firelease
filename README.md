@@ -94,6 +94,10 @@ constraints along the way and throws an error if the worker needs to abort.
 
 Shuts down firelease by refusing to take new tasks, and returns a promise that resolves once all currently running tasks have completed.
 
+```function listTasksInProgress()```
+
+Returns an array of the URLs of all tasks that are currently being worked on.
+
 There are also some module-level settings you can change:
 
 ```globalMaxConcurrent: {number}```
