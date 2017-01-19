@@ -2,10 +2,6 @@
 # yarn lockfile v1
 
 
-clone@^2.1.0:
-  version "2.1.0"
-  resolved "https://registry.yarnpkg.com/clone/-/clone-2.1.0.tgz#9c715bfbd39aa197c8ee0f8e65c3912ba34f8cd6"
-
 define-properties@^1.1.2:
   version "1.1.2"
   resolved "https://registry.yarnpkg.com/define-properties/-/define-properties-1.1.2.tgz#83a73f2fea569898fb737193c8f873caf6d45c94"
@@ -89,11 +85,10 @@ ms@0.7.x:
   version "0.7.2"
   resolved "https://registry.yarnpkg.com/ms/-/ms-0.7.2.tgz#ae25cf2512b3885a1d95d7f037868d8431124765"
 
-nodefire@^0.8.3:
-  version "0.8.3"
-  resolved "https://registry.yarnpkg.com/nodefire/-/nodefire-0.8.3.tgz#cfb6d7ee65c0392602b43ce16f1a44da6d757ace"
+nodefire@^0.9.0-2:
+  version "0.9.0-2"
+  resolved "https://registry.yarnpkg.com/nodefire/-/nodefire-0.9.0-2.tgz#d2f4408e29eb05e004e101073268fa8a32351b11"
   dependencies:
-    clone "^2.1.0"
     firebase "^2.2"
     firebase-rolling-log "^0.2.0"
     firebase-token-generator "^2.0.0"
