@@ -10,13 +10,22 @@ var PING_KEY = 'ping';
 
 var queues = [];
 var tasks = {};
+var globalMaxConcurrent = Number.MAX_VALUE;
 var globalNumConcurrent = 0;
 var shutdownResolve, shutdownReject, shutdownPromise;
 
 var scanAll = _.debounce(function() {
+  var numWorking = 0;
   _.each(tasks, function(task) {
     task.queue.process(task);
+    if (task.working) numWorking++;
   });
+  if (numWorking !== globalNumConcurrent) {
+    console.log(
+      'Correcting number of active workers: ' + globalNumConcurrent + ' to ' + numWorking);
+    globalNumConcurrent = numWorking;
+    if (shutdownResolve && !globalMaxConcurrent && !globalNumConcurrent) shutdownResolve();
+  }
 }, 100);
 
 
@@ -33,7 +42,6 @@ module.exports.RETRY = {};
  * queues.
  * @type {number}
  */
-var globalMaxConcurrent = Number.MAX_VALUE;
 Object.defineProperty(module.exports, 'globalMaxConcurrent', {
   get: function() {return globalMaxConcurrent;},
   set: function(value) {
@@ -177,13 +185,14 @@ Task.prototype.process = function() {
     item._lease.attempts = (item._lease.attempts || 0) + 1;
     if (!item._lease.initial) item._lease.initial = startTimestamp;
     return this.queue.callPreprocess(item);
-  }).bind(this), {detectStuck: 12, prefetchValue: false});
+  }).bind(this), {detectStuck: 8, prefetchValue: false});
   return transactionPromise.then((function(item) {
     if (!acquired) this.queue.countTaskAcquired(false);
     if (!acquired || item === null || this.ref.key() === PING_KEY) return;
     if (!_.isObject(item)) throw new Error('item not an object: ' + item);
     Object.defineProperty(item, '$leaseTransaction', {value: transactionPromise.transaction});
     this.queue.countTaskAcquired(true);
+    console.log('Acquired queue item', this.key);
     return this.run(item, startTimestamp);
   }).bind(this)).catch((function(error) {
     console.log('Queue item', this.key, 'lease transaction error:', error.message);
@@ -291,21 +300,16 @@ function Queue(ref, options, worker) {
 }
 
 Queue.prototype.resetQueueListeners = function(addOnly) {
-  NodeFire.enableFirebaseLogging(true);
-  if (!addOnly) {
-    this.topRef.off('child_added', this.addTask, this);
-    this.topRef.off('child_removed', this.removeTask, this);
-    this.topRef.off('child_moved', this.addTask, this);
-    var taskKeys = _(tasks).map(function(task, key) {
-      return task.queue === this ? key : null;
-    }, this).compact().value();
-    _.each(taskKeys, function(key) {delete tasks[key];});
-    console.log('Resetting queue listeners:', this.ref.toString());
-  }
+  // For some reason, removing the specific callback functions doesn't work here.  Since there
+  // should be nobody else listening on the exact queue query, just turn it off completely.
+  this.topRef.off();
+  var taskKeys = _(tasks).map(function(task, key) {
+    return task.queue === this ? key : null;
+  }, this).compact().value();
+  _.each(taskKeys, function(key) {delete tasks[key];});
   this.topRef.on('child_added', this.addTask, this.crash, this);
   this.topRef.on('child_removed', this.removeTask, this.crash, this);
   this.topRef.on('child_moved', this.addTask, this.crash, this);
-  NodeFire.enableFirebaseLogging(false);
 };
 
 Queue.prototype.scan = function() {
@@ -371,14 +375,14 @@ Queue.prototype.process = function(task) {
     globalNumConcurrent++;
     this.numConcurrent++;
     task.process().then((function() {
-      if (task.removed) delete tasks[task.key];
-      if (globalNumConcurrent === globalMaxConcurrent) {
-        scanAll();
-      } else if (this.numConcurrent === this.options.maxConcurrent) {
-        this.scan();
-      }
       globalNumConcurrent--;
       this.numConcurrent--;
+      if (task.removed) delete tasks[task.key];
+      if (globalNumConcurrent === globalMaxConcurrent - 1) {
+        scanAll();
+      } else if (this.numConcurrent === this.options.maxConcurrent - 1) {
+        this.scan();
+      }
       if (shutdownResolve && !globalMaxConcurrent && !globalNumConcurrent) shutdownResolve();
       if (!globalMaxConcurrent) {
         console.log('Queues draining, tasks in progress: ' + globalNumConcurrent);
