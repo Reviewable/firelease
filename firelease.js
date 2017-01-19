@@ -59,8 +59,8 @@ Object.defineProperty(module.exports, 'globalMaxConcurrent', {
  * @type {Object}
  */
 module.exports.defaults = {
-  maxConcurrent: Number.MAX_VALUE, bufferSize: 5, minLease: '30s', maxLease: '1h', leaseDelay: 0,
-  maxLeaseDelay: 0, healthyPingLatency: '1.5s'
+  maxConcurrent: Number.MAX_VALUE, minLease: '30s', maxLease: '1h', leaseDelay: 0, maxLeaseDelay: 0,
+  healthyPingLatency: '1.5s'
 };
 
 /**
@@ -127,7 +127,7 @@ class Task {
       item._lease.attempts = (item._lease.attempts || 0) + 1;
       if (!item._lease.initial) item._lease.initial = startTimestamp;
       return this.queue.callPreprocess(item);
-    }, {detectStuck: 8, prefetchValue: false});
+    }, {detectStuck: 8, prefetchValue: false, timeout: 10000});
     return transactionPromise.then(item => {
       if (!acquired) this.queue.countTaskAcquired(false);
       if (!acquired || item === null || this.ref.key() === PING_KEY) return;
@@ -139,10 +139,6 @@ class Task {
       console.log(`Queue item ${this.key} lease transaction error: ${error.message}`);
       error.firelease = _.extend(error.firelease || {}, {itemKey: this.key, phase: 'leasing'});
       module.exports.captureError(error);
-      if (/\b(stuck|maxretry)$/.test(error.message)) {
-        this.ref.uncache();
-        this.queue.resetQueueListeners();
-      }
       // Hardcoded retry in 1 second -- hard to do anything smarter, since we failed to update the
       // task in Firebase.
       this.expiry = 0;
@@ -232,26 +228,13 @@ class Queue {
     this.tasksAcquired = 0;
     this.worker = worker;
     this.ref = ref;
-    this.topRef = ref.orderByChild('_lease/expiry').limitToFirst(this.options.bufferSize);
 
-    // Call before wrapping in debounce.
-    this.resetQueueListeners(true);
-
-    // Need each queue's scan and resetQueueListeners function to be debounced separately.
+    // Need each queue's scan function to be debounced separately.
     this.scan = _.debounce(this.scan.bind(this), 100);
-    this.resetQueueListeners = _.debounce(
-      this.resetQueueListeners.bind(this), 250, {leading: true, trailing: false, maxWait: 500});
-  }
 
-  resetQueueListeners(addOnly) {
-    // For some reason, removing the specific callback functions doesn't work here.  Since there
-    // should be nobody else listening on the exact queue query, just turn it off completely.
-    this.topRef.off();
-    const ourTasks = _.filter(tasks, task => task.queue === this);
-    _.each(ourTasks, task => {delete tasks[task.key];});  // don't chain with line above!
-    this.topRef.on('child_added', this.addTask, this.crash, this);
-    this.topRef.on('child_removed', this.removeTask, this.crash, this);
-    this.topRef.on('child_moved', this.addTask, this.crash, this);
+    ref.on('child_added', this.addTask, this.crash, this);
+    ref.on('child_removed', this.removeTask, this.crash, this);
+    ref.on('child_moved', this.addTask, this.crash, this);
   }
 
   scan() {
@@ -371,9 +354,6 @@ class Queue {
  *        Firelease in each task.
  * @param {Object} options Optional options, supporting the following values:
  *        maxConcurrent: {number} max number of tasks to handle concurrently for this worker.
- *        bufferSize: {number} upper bound on how many tasks to keep buffered and potentially go
- *          through leasing transactions in parallel; not worth setting higher than maxConcurrent,
- *          or higher than about 10.
  *        minLease: {number | string} minimum duration of each lease, which should equal the maximum
  *          expected time a worker will take to handle a task.
  *        maxLease: {number | string} maximum duration of each lease; the lease duration is doubled
