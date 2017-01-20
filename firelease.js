@@ -15,17 +15,9 @@ let globalNumConcurrent = 0;
 let shutdownResolve, shutdownReject, shutdownPromise;
 
 const scanAll = _.debounce(function() {
-  let numWorking = 0;
-  _.each(tasks, function(task) {
+  _.each(tasks, task => {
     task.queue.process(task);
-    if (task.working) numWorking++;
   });
-  if (numWorking !== globalNumConcurrent) {
-    console.log(
-      'Correcting number of active workers: ' + globalNumConcurrent + ' to ' + numWorking);
-    globalNumConcurrent = numWorking;
-    if (shutdownResolve && !globalMaxConcurrent && !globalNumConcurrent) shutdownResolve();
-  }
 }, 100);
 
 
@@ -146,7 +138,10 @@ class Task {
       // Sometimes a transaction appears to get stuck on an item that has already been deleted.
       // Try to probe for the item explicitly and just give up if it's already gone.
       return this.ref.get().catch(e => 'placeholder').then(item => {
-        if (!item) return;
+        if (!item) {
+          console.log(`Queue item ${this.key} gone, discarding lease transaction error`);
+          return;
+        }
         console.log(`Queue item ${this.key} lease transaction error: ${error.message}`);
         error.firelease = _.extend(
           error.firelease || {}, {itemKey: this.key, phase: 'leasing', lease: item._lease});
