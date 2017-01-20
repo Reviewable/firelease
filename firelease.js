@@ -111,23 +111,30 @@ class Task {
     let acquired;
     this.working = true;
     const transactionPromise = this.ref.transaction(item => {
-      acquired = true;
-      if (!item || this.ref.key() === PING_KEY) return null;
+      acquired = false;
+      if (tasks[this.key] !== this) {
+        console.log(`Queue item ${this.key} task not current, bailing from transaction`);
+        return;
+      }
+      if (!item || this.ref.key() === PING_KEY) {
+        acquired = true;
+        return null;
+      }
       startTimestamp = this.queue.now();
       // console.log('txn  ', this.ref.key(), 'lease', item._lease, 'now', startTimestamp);
       // Check if another process beat us to it.
       if (item._lease && item._lease.expiry &&
           item._lease.expiry + this.queue.leaseDelay > startTimestamp) {
-        acquired = false;
         return item;
       }
+      acquired = true;
       item._lease = item._lease || {};
       item._lease.time = this.queue.constrainLeaseDuration(item._lease.time * 2 || 0);
       item._lease.expiry = startTimestamp + item._lease.time;
       item._lease.attempts = (item._lease.attempts || 0) + 1;
       if (!item._lease.initial) item._lease.initial = startTimestamp;
       return this.queue.callPreprocess(item);
-    }, {detectStuck: 8, prefetchValue: false, timeout: 10000});
+    }, {detectStuck: 8, prefetchValue: false, timeout: ms('15s')});
     return transactionPromise.then(item => {
       if (!acquired) this.queue.countTaskAcquired(false);
       if (!acquired || item === null || this.ref.key() === PING_KEY) return;
@@ -136,13 +143,19 @@ class Task {
       this.queue.countTaskAcquired(true);
       return this.run(item, startTimestamp);
     }).catch(error => {
-      console.log(`Queue item ${this.key} lease transaction error: ${error.message}`);
-      error.firelease = _.extend(error.firelease || {}, {itemKey: this.key, phase: 'leasing'});
-      module.exports.captureError(error);
-      // Hardcoded retry in 1 second -- hard to do anything smarter, since we failed to update the
-      // task in Firebase.
-      this.expiry = 0;
-      setTimeout(this.queue.scan, 1000);
+      // Sometimes a transaction appears to get stuck on an item that has already been deleted.
+      // Try to probe for the item explicitly and just give up if it's already gone.
+      return this.ref.get().catch(e => 'placeholder').then(item => {
+        if (!item) return;
+        console.log(`Queue item ${this.key} lease transaction error: ${error.message}`);
+        error.firelease = _.extend(
+          error.firelease || {}, {itemKey: this.key, phase: 'leasing', lease: item._lease});
+        module.exports.captureError(error);
+        // Hardcoded retry -- hard to do anything smarter, since we failed to update the task in
+        // Firebase.
+        this.expiry = 0;
+        setTimeout(this.queue.scan, ms('3s'));
+      });
     }).then(() => {
       this.working = false;
     });
