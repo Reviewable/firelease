@@ -83,7 +83,7 @@ class Task {
   }
 
   prepare() {
-    if (this.removed || this.working && !this.expiry) return false;
+    if (tasks[this.key] !== this || this.removed || this.working && !this.expiry) return false;
     const now = this.queue.now();
     const busy = this.expiry + this.queue.leaseDelay > now;
     // console.log('prepare', this.ref.key(), 'expiry', this.expiry, 'now', now);
