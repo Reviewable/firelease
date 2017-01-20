@@ -83,7 +83,7 @@ class Task {
   }
 
   prepare() {
-    if (tasks[this.key] !== this || this.removed || this.working && !this.expiry) return false;
+    if (tasks[this.key] !== this || this.removed || this.working) return false;
     const now = this.queue.now();
     const busy = this.expiry + this.queue.leaseDelay > now;
     // console.log('prepare', this.ref.key(), 'expiry', this.expiry, 'now', now);
@@ -104,7 +104,7 @@ class Task {
     this.working = true;
     const transactionPromise = this.ref.transaction(item => {
       acquired = false;
-      if (tasks[this.key] !== this) {
+      if (tasks[this.key] !== this || this.removed) {
         console.log(`Queue item ${this.key} task not current, bailing from transaction`);
         return;
       }
