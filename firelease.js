@@ -104,10 +104,7 @@ class Task {
     this.working = true;
     const transactionPromise = this.ref.transaction(item => {
       acquired = false;
-      if (tasks[this.key] !== this || this.removed) {
-        console.log(`Queue item ${this.key} task not current, bailing from transaction`);
-        return;
-      }
+      if (tasks[this.key] !== this || this.removed) return;
       if (!item || this.ref.key() === PING_KEY) {
         acquired = true;
         return null;
