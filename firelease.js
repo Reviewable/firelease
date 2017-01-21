@@ -132,28 +132,19 @@ class Task {
       this.queue.countTaskAcquired(true);
       return this.run(item, startTimestamp);
     }).catch(error => {
-      // Sometimes a transaction appears to get stuck on an item that has already been deleted.
-      // Try to probe for the item explicitly and just give up if it's already gone.
-      return this.ref.get({cache: false}).catch(e => 'placeholder').then(item => {
-        if (!item) {
-          console.log(`Queue item ${this.key} gone, discarding lease transaction error`);
-          return;
-        }
-        console.log(`Queue item ${this.key} lease transaction error: ${error.message}`);
-        error.firelease = _.extend(
-          error.firelease || {}, {itemKey: this.key, phase: 'leasing', lease: item._lease});
-        module.exports.captureError(error);
-        if (/\b(stuck|maxretry|timeout)$/.test(error.message)) {
-          NodeFire.enableFirebaseLogging(true);
-          this.ref.uncache();
-          this.queue.resetListeners();
-          NodeFire.enableFirebaseLogging(false);
-        }
-        // Hardcoded retry -- hard to do anything smarter, since we failed to update the task in
-        // Firebase.
-        this.expiry = 0;
-        setTimeout(this.queue.scan, ms('3s'));
-      });
+      console.log(`Queue item ${this.key} lease transaction error: ${error.message}`);
+      error.firelease = _.extend(error.firelease || {}, {itemKey: this.key, phase: 'leasing'});
+      module.exports.captureError(error);
+      if (/\b(stuck|maxretry|timeout)$/.test(error.message)) {
+        NodeFire.enableFirebaseLogging(true);
+        this.ref.uncache();
+        this.queue.resetListeners();
+        NodeFire.enableFirebaseLogging(false);
+      }
+      // Hardcoded retry -- hard to do anything smarter, since we failed to update the task in
+      // Firebase.
+      this.expiry = 0;
+      setTimeout(this.queue.scan, ms('3s'));
     }).then(() => {
       this.working = false;
     });
