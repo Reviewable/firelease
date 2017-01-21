@@ -134,7 +134,7 @@ class Task {
     }).catch(error => {
       // Sometimes a transaction appears to get stuck on an item that has already been deleted.
       // Try to probe for the item explicitly and just give up if it's already gone.
-      return this.ref.get().catch(e => 'placeholder').then(item => {
+      return this.ref.get({cache: false}).catch(e => 'placeholder').then(item => {
         if (!item) {
           console.log(`Queue item ${this.key} gone, discarding lease transaction error`);
           return;
@@ -144,8 +144,10 @@ class Task {
           error.firelease || {}, {itemKey: this.key, phase: 'leasing', lease: item._lease});
         module.exports.captureError(error);
         if (/\b(stuck|maxretry|timeout)$/.test(error.message)) {
+          NodeFire.enableFirebaseLogging(true);
           this.ref.uncache();
           this.queue.resetListeners();
+          NodeFire.enableFirebaseLogging(false);
         }
         // Hardcoded retry -- hard to do anything smarter, since we failed to update the task in
         // Firebase.
@@ -252,13 +254,11 @@ class Queue {
   resetListeners() {
     if (this.listening) {
       console.log('Resetting lease listeners for queue', this.ref.toString());
-      NodeFire.enableFirebaseLogging(true);
       this.ref.off('child_added', this.addTask, this);
       this.ref.off('child_removed', this.removeTask, this);
       this.ref.off('child_moved', this.addTask, this);
       const ourTasks = _.filter(tasks, task => task.queue === this);
       _.each(ourTasks, task => {delete tasks[task.key];});  // don't chain with line above!
-      NodeFire.enableFirebaseLogging(false);
     }
     this.ref.on('child_added', this.addTask, this.crash, this);
     this.ref.on('child_removed', this.removeTask, this.crash, this);
