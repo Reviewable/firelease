@@ -143,6 +143,10 @@ class Task {
         error.firelease = _.extend(
           error.firelease || {}, {itemKey: this.key, phase: 'leasing', lease: item._lease});
         module.exports.captureError(error);
+        if (/\b(stuck|maxretry|timeout)$/.test(error.message)) {
+          this.ref.uncache();
+          this.queue.resetListeners();
+        }
         // Hardcoded retry -- hard to do anything smarter, since we failed to update the task in
         // Firebase.
         this.expiry = 0;
@@ -233,13 +237,33 @@ class Queue {
     this.tasksAcquired = 0;
     this.worker = worker;
     this.ref = ref;
+    this.listening = false;
 
     // Need each queue's scan function to be debounced separately.
     this.scan = _.debounce(this.scan.bind(this), 100);
 
-    ref.on('child_added', this.addTask, this.crash, this);
-    ref.on('child_removed', this.removeTask, this.crash, this);
-    ref.on('child_moved', this.addTask, this.crash, this);
+    this.resetListeners();
+    this.resetListeners = _.debounce(
+      this.resetListeners.bind(this), ms('1s'),
+      {leading: true, trailing: false, maxWait: ms('2s')}
+    );
+  }
+
+  resetListeners() {
+    if (this.listening) {
+      console.log('Resetting lease listeners for queue', this.ref.toString());
+      NodeFire.enableFirebaseLogging(true);
+      this.ref.off('child_added', this.addTask, this);
+      this.ref.off('child_removed', this.removeTask, this);
+      this.ref.off('child_moved', this.addTask, this);
+      const ourTasks = _.filter(tasks, task => task.queue === this);
+      _.each(ourTasks, task => {delete tasks[task.key];});  // don't chain with line above!
+      NodeFire.enableFirebaseLogging(false);
+    }
+    this.ref.on('child_added', this.addTask, this.crash, this);
+    this.ref.on('child_removed', this.removeTask, this.crash, this);
+    this.ref.on('child_moved', this.addTask, this.crash, this);
+    this.listening = true;
   }
 
   scan() {
