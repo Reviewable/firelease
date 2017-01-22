@@ -135,12 +135,6 @@ class Task {
       console.log(`Queue item ${this.key} lease transaction error: ${error.message}`);
       error.firelease = _.extend(error.firelease || {}, {itemKey: this.key, phase: 'leasing'});
       module.exports.captureError(error);
-      if (/\b(stuck|maxretry|timeout)$/.test(error.message)) {
-        NodeFire.enableFirebaseLogging(true);
-        this.ref.uncache();
-        this.queue.resetListeners();
-        NodeFire.enableFirebaseLogging(false);
-      }
       // Hardcoded retry -- hard to do anything smarter, since we failed to update the task in
       // Firebase.
       this.expiry = 0;
@@ -161,7 +155,7 @@ class Task {
       if (now > item._lease.expiry) {
         // If it looks like we exceeded the lease time, double-check against the current item before
         // crying wolf, in case the worker extended the lease.
-        return this.ref.get().then(item => {
+        return this.ref.get({cache: false}).then(item => {
           // If no item, we can't tell if it's because the worker chose to delete it early, or
           // because it overran its lease and another worker picked it up and completed it, so say
           // nothing.
@@ -230,31 +224,13 @@ class Queue {
     this.tasksAcquired = 0;
     this.worker = worker;
     this.ref = ref;
-    this.listening = false;
 
     // Need each queue's scan function to be debounced separately.
     this.scan = _.debounce(this.scan.bind(this), 100);
 
-    this.resetListeners();
-    this.resetListeners = _.debounce(
-      this.resetListeners.bind(this), ms('1s'),
-      {leading: true, trailing: false, maxWait: ms('2s')}
-    );
-  }
-
-  resetListeners() {
-    if (this.listening) {
-      console.log('Resetting lease listeners for queue', this.ref.toString());
-      this.ref.off('child_added', this.addTask, this);
-      this.ref.off('child_removed', this.removeTask, this);
-      this.ref.off('child_moved', this.addTask, this);
-      const ourTasks = _.filter(tasks, task => task.queue === this);
-      _.each(ourTasks, task => {delete tasks[task.key];});  // don't chain with line above!
-    }
-    this.ref.on('child_added', this.addTask, this.crash, this);
-    this.ref.on('child_removed', this.removeTask, this.crash, this);
-    this.ref.on('child_moved', this.addTask, this.crash, this);
-    this.listening = true;
+    ref.on('child_added', this.addTask, this.crash, this);
+    ref.on('child_removed', this.removeTask, this.crash, this);
+    ref.on('child_moved', this.addTask, this.crash, this);
   }
 
   scan() {
