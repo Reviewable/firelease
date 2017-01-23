@@ -123,7 +123,7 @@ class Task {
       item._lease.attempts = (item._lease.attempts || 0) + 1;
       if (!item._lease.initial) item._lease.initial = startTimestamp;
       return this.queue.callPreprocess(item);
-    }, {detectStuck: 8, prefetchValue: false, timeout: ms('15s')});
+    }, {detectStuck: 5, prefetchValue: false, timeout: ms('15s')});
     return transactionPromise.then(item => {
       if (!acquired) this.queue.countTaskAcquired(false);
       if (!acquired || item === null || this.ref.key() === PING_KEY) return;
