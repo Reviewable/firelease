@@ -499,6 +499,7 @@ module.exports.extendLease = function(item, timeNeeded) {
   if (!(item && item._lease && item._lease.expiry)) throw new Error('Invalid task');
   item._lease.timeNeeded = Math.max(item._lease.timeNeeded || 0, duration(timeNeeded));
   if (!item._lease.extendLeasePromise) {
+    if (!globalMaxConcurrent) return Promise.reject(new Error('shutdown in progress'));
     let error, timeNeededUsed;
     item._lease.extendLeasePromise = item.$ref.transaction(item2 => {
       error = null;
