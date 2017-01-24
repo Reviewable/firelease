@@ -51,8 +51,8 @@ Object.defineProperty(module.exports, 'globalMaxConcurrent', {
  * @type {Object}
  */
 module.exports.defaults = {
-  maxConcurrent: Number.MAX_VALUE, minLease: '30s', maxLease: '1h', leaseDelay: 0, maxLeaseDelay: 0,
-  healthyPingLatency: '1.5s'
+  maxConcurrent: Number.MAX_VALUE, bufferSize: 5, minLease: '30s', maxLease: '1h', leaseDelay: 0,
+  maxLeaseDelay: 0, healthyPingLatency: '1.5s'
 };
 
 /**
@@ -228,9 +228,10 @@ class Queue {
     // Need each queue's scan function to be debounced separately.
     this.scan = _.debounce(this.scan.bind(this), 100);
 
-    ref.on('child_added', this.addTask, this.crash, this);
-    ref.on('child_removed', this.removeTask, this.crash, this);
-    ref.on('child_moved', this.addTask, this.crash, this);
+    const topRef = ref.orderByChild('_lease/expiry').limitToFirst(this.options.bufferSize);
+    topRef.on('child_added', this.addTask, this.crash, this);
+    topRef.on('child_removed', this.removeTask, this.crash, this);
+    topRef.on('child_moved', this.addTask, this.crash, this);
   }
 
   scan() {
@@ -350,6 +351,9 @@ class Queue {
  *        Firelease in each task.
  * @param {Object} options Optional options, supporting the following values:
  *        maxConcurrent: {number} max number of tasks to handle concurrently for this worker.
+ *        bufferSize: {number} upper bound on how many tasks to keep buffered and potentially go
+ *          through leasing transactions in parallel; not worth setting higher than maxConcurrent,
+ *          or higher than about 10.
  *        minLease: {number | string} minimum duration of each lease, which should equal the maximum
  *          expected time a worker will take to handle a task.
  *        maxLease: {number | string} maximum duration of each lease; the lease duration is doubled
