@@ -68,6 +68,7 @@ class Task {
     this.queue = queue;
     this.ref = snap.ref();
     this.key = Task.makeKey(snap);
+    this.phase = 'wait';
     this.updateFrom(snap);
   }
 
@@ -102,6 +103,16 @@ class Task {
     let startTimestamp;
     let acquired;
     this.working = true;
+    this.workingTimeout = setTimeout(() => {
+      module.exports.captureError(
+        new Error('Working task timeout'),
+        {
+          fingerprint: ['firelease', 'working', 'timeout'],
+          extra: {phase: this.phase, expiry: this.expiry, removed: this.removed, key: this.key}
+        }
+      );
+    }, ms('10m'));
+    this.phase = 'lease';
     const transactionPromise = this.ref.transaction(item => {
       acquired = false;
       if (tasks[this.key] !== this || this.removed) return;
@@ -141,6 +152,8 @@ class Task {
       setTimeout(this.queue.scan, ms('3s'));
     }).then(() => {
       this.working = false;
+      clearTimeout(this.workingTimeout);
+      this.phase = this.removed ? 'done' : 'retry';
     });
   }
 
@@ -150,9 +163,11 @@ class Task {
       if (!(item._lease && item._lease.expiry)) return 0;
       return Math.max(0, item._lease.expiry - this.queue.now());
     }});
+    this.phase = 'work';
     return this.queue.callWorker(item).finally(() => {
       const now = this.queue.now();
       if (now > item._lease.expiry) {
+        this.phase = 'exceed';
         // If it looks like we exceeded the lease time, double-check against the current item before
         // crying wolf, in case the worker extended the lease.
         return this.ref.get({cache: false}).then(item => {
@@ -173,6 +188,7 @@ class Task {
         });
       }
     }).then(result => {
+      this.phase = 'post';
       if (_.isUndefined(result) || result === null) return this.ref.remove();  // common shortcut
       return this.ref.transaction(item2 => {
         if (!item2) return null;

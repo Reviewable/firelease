@@ -85,9 +85,9 @@ ms@0.7.x:
   version "0.7.2"
   resolved "https://registry.yarnpkg.com/ms/-/ms-0.7.2.tgz#ae25cf2512b3885a1d95d7f037868d8431124765"
 
-nodefire@^0.9.0-2:
-  version "0.9.0-2"
-  resolved "https://registry.yarnpkg.com/nodefire/-/nodefire-0.9.0-2.tgz#d2f4408e29eb05e004e101073268fa8a32351b11"
+nodefire@^0.9.0:
+  version "0.9.4"
+  resolved "https://registry.yarnpkg.com/nodefire/-/nodefire-0.9.4.tgz#527137a73a5fdc01101dad04fb6d7383d2e08aab"
   dependencies:
     firebase "^2.2"
     firebase-rolling-log "^0.2.0"
