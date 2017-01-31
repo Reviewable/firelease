@@ -104,13 +104,10 @@ class Task {
     let acquired;
     this.working = true;
     this.workingTimeout = setTimeout(() => {
-      module.exports.captureError(
-        new Error('Working task timeout'),
-        {
-          fingerprint: ['firelease', 'working', 'timeout'],
-          extra: {phase: this.phase, expiry: this.expiry, removed: this.removed, key: this.key}
-        }
-      );
+      const e = new Error('Working task timeout');
+      e.fingerprint = ['firelease', 'working', 'timeout'];
+      e.extra = {phase: this.phase, expiry: this.expiry, removed: this.removed, key: this.key};
+      module.exports.captureError(e);
     }, ms('10m'));
     this.phase = 'lease';
     const transactionPromise = this.ref.transaction(item => {
