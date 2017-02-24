@@ -1,6 +1,8 @@
 Firelease
 =========
 
+[![Project Status: Active - The project has reached a stable, usable state and is being actively developed.](http://www.repostatus.org/badges/latest/active.svg)](http://www.repostatus.org/#active)
+
 A Firebase queue consumer for Node with at-least-once and at-most-once semantics, fine-grained concurrency controls, and support for promises and generators.  Built on top of [Nodefire](https://github.com/pkaminski/nodefire).
 
 API
