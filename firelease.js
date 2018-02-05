@@ -14,7 +14,7 @@ let globalMaxConcurrent = Number.MAX_VALUE;
 let globalNumConcurrent = 0;
 let shutdownResolve, shutdownReject, shutdownPromise;
 
-const scanAll = _.debounce(function() {
+const scanAll = _.debounce(() => {
   _.each(tasks, task => {
     task.queue.process(task);
   });
@@ -35,8 +35,8 @@ module.exports.RETRY = {};
  * @type {number}
  */
 Object.defineProperty(module.exports, 'globalMaxConcurrent', {
-  get: function() {return globalMaxConcurrent;},
-  set: function(value) {
+  get: () => {return globalMaxConcurrent;},
+  set: value => {
     globalMaxConcurrent = value;
     if (value) {
       if (shutdownReject) shutdownReject(new Error('Queues restarted'));
@@ -60,7 +60,7 @@ module.exports.defaults = {
  * want to change it to something else in production.  The function should take a single exception
  * argument.
  */
-module.exports.captureError = function(error) {console.log(error.stack);};
+module.exports.captureError = error => {console.log(error.stack);};
 
 
 class Task {
@@ -432,7 +432,7 @@ module.exports.pingQueues = function(callback, interval) {
   if (pingIntervalHandle) clearInterval(pingIntervalHandle);
   pingCallback = callback;
   pingIntervalHandle = setInterval(() => {
-    checkPings().catch(function(error) {
+    checkPings().catch(error => {
       error.firelease = _.extend(error.firelease || {}, {phase: 'pinging'});
       error.level = 'warning';
       module.exports.captureError(error);
@@ -448,7 +448,7 @@ function checkPings() {
     const start = Date.now();
     const pingRef = queue.ref.child(PING_KEY);
     let pingFree;
-    return pingRef.transaction(function(item) {
+    return pingRef.transaction(item => {
       pingFree = !item;
       return item || {timestamp: start, _lease: {expiry: 1}};
     }, {prefetchValue: false, timmeout: ms('10s')}).then(item => {
@@ -478,8 +478,7 @@ function checkPings() {
           healthy: _.every(results, 'healthy'),
           sickQueues: sickQueueKeys,
           maxLatency: _.max(_.pluck(results, 'latency')),
-          tasksAcquired:
-            _.reduce(results, function(sum, result) {return sum + result.tasksAcquired;}, 0),
+          tasksAcquired: _.reduce(results, (sum, result) => sum + result.tasksAcquired, 0),
           leaseDelays: {min: _.min(delays), max: _.max(delays), median: delaysMedian}
         });
       }
@@ -588,5 +587,5 @@ module.exports.shutdown = function(callback) {
  * Lists the URLs of all tasks that are currently being worked on.
  */
 module.exports.listTasksInProgress = function() {
-  return _(tasks).map(function(task, key) {return task.working ? key : null;}).compact().value();
+  return _(tasks).map((task, key) => task.working ? key : null).compact().value();
 };
