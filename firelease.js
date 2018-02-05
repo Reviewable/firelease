@@ -451,9 +451,9 @@ function checkPings() {
     return pingRef.transaction(function(item) {
       pingFree = !item;
       return item || {timestamp: start, _lease: {expiry: 1}};
-    }, {prefetchValue: false}).then(item => {
+    }, {prefetchValue: false, timmeout: ms('10s')}).then(item => {
       if (!pingFree) return null;  // another process is currently pinging
-      return waitUntilDeleted(pingRef).then(() => {
+      return waitUntilDeleted(pingRef, queue.options.healthyPingLatency + ms('10s')).then(() => {
         const latency = Date.now() - start;
         return {
           queue: queue, latency: latency, healthy: latency < queue.options.healthyPingLatency,
@@ -488,7 +488,7 @@ function checkPings() {
   });
 }
 
-function waitUntilDeleted(ref) {
+function waitUntilDeleted(ref, timeout) {
   return new Promise((resolve, reject) => {
     function onValue(snap) {
       if (snap.val()) return;
@@ -496,6 +496,7 @@ function waitUntilDeleted(ref) {
       resolve();
     }
     ref.on('value', onValue, reject);
+    if (timeout) setTimeout(() => {reject(new Error('timeout'));}, timeout);
   });
 }
 
