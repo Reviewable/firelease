@@ -198,6 +198,8 @@ class Task {
           item2._lease = item2._lease || {};
           item2._lease.expiry = value > 1000000000000 ? value : startTimestamp + value;
           item2._lease.time = null;
+        } else if (_.isObject(value)) {
+          item2._lease = value;
         } else {
           throw new Error(`Unexpected return value from worker: ${value}`);
         }
@@ -396,6 +398,7 @@ class Queue {
  *          reset the lease backoff counter).
  *        * A duration after which the task should be retried relative to when it was started.
  *        * An epoch in milliseconds greater than 1000000000000 at which the task should be tried.
+ *        * A complete _lease object, to be saved as-is.
  *        * A function that takes the task as argument and returns one of the values above.  This
  *          function will be executed in a transaction to ensure atomicity.
  *        All of these values can also be wrapped in a promise or a generator, which will be dealt
