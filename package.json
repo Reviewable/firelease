@@ -31,7 +31,6 @@
     "promise.prototype.finally": "3.x"
   },
   "peerDependencies": {
-    "nodefire": "^1.0.0",
-    "firebase-admin": "5.x.x || 6.x.x"
+    "nodefire": "^1.0.0"
   }
 }
