@@ -167,6 +167,7 @@ class Task {
         this.phase = 'exceed';
         // If it looks like we exceeded the lease time, double-check against the current item before
         // crying wolf, in case the worker extended the lease.
+        // eslint-disable-next-line no-shadow
         return this.ref.get({cache: false}).then(item => {
           // If no item, we can't tell if it's because the worker chose to delete it early, or
           // because it overran its lease and another worker picked it up and completed it, so say
@@ -209,13 +210,13 @@ class Task {
       });
     }, error => {
       console.log(`Queue item ${this.key} processing error: ${error.message}`);
-      error.firelease = _.extend(error.firelease || {} , {itemKey: this.key, phase: 'processing'});
+      error.firelease = _.extend(error.firelease || {}, {itemKey: this.key, phase: 'processing'});
       if (!error.level) error.level = 'warning';
       module.exports.captureError(error);
     }).catch(error => {
       console.log(`Queue item ${this.key} post-processing error: ${error.message}`);
       error.firelease =
-        _.extend(error.firelease || {} , {itemKey: this.key, phase: 'post-processing'});
+        _.extend(error.firelease || {}, {itemKey: this.key, phase: 'post-processing'});
       module.exports.captureError(error);
     });
   }
@@ -224,7 +225,7 @@ class Task {
 
 class Queue {
   constructor(ref, options, worker) {
-  if (_.isFunction(options)) {
+    if (_.isFunction(options)) {
       worker = options;
       options = {};
     }
@@ -343,10 +344,9 @@ class Queue {
           Promise.co) {
         // Got a generator, let's co-ify it nicely to capture errors.
         return Promise.co(result);
-      } else {
-        return Promise.resolve(result);
       }
-    } catch(e) {
+      return Promise.resolve(result);
+    } catch (e) {
       return Promise.reject(e);
     }
   }
@@ -459,7 +459,7 @@ function checkPings() {
       return waitUntilDeleted(pingRef, queue.options.healthyPingLatency + ms('10s')).then(() => {
         const latency = Date.now() - start;
         return {
-          queue: queue, latency: latency, healthy: latency < queue.options.healthyPingLatency,
+          queue, latency, healthy: latency < queue.options.healthyPingLatency,
           leaseDelay: queue.leaseDelay, tasksAcquired: queue.tasksAcquired
         };
       }, () => null);
@@ -554,7 +554,7 @@ module.exports.extendLease = function(item, timeNeeded) {
       }
       if (error) {
         error.firelease = _.extend(
-          error.firelease || {}, {itemKey: item.$ref.toString(), timeNeeded: timeNeeded});
+          error.firelease || {}, {itemKey: item.$ref.toString(), timeNeeded});
         return Promise.reject(error);
       }
       if (item2 && item._lease) item._lease.expiry = item2._lease.expiry;
