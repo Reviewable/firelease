@@ -78,14 +78,14 @@ class Task {
 
   updateFrom(snap) {
     const value = snap.val();
-    this.expiry = value && value._lease && value._lease.expiry || this.queue.now();
+    this.expiry = value && value._lease && value._lease.expiry || this.queue.now;
     // console.log('update', this.key, 'expiry', this.expiry);
     delete this.removed;
   }
 
   prepare() {
     if (tasks[this.key] !== this || this.removed || this.working) return false;
-    const now = this.queue.now();
+    const now = this.queue.now;
     const busy = this.expiry + this.queue.leaseDelay > now;
     // console.log('prepare', this.ref.key(), 'expiry', this.expiry, 'now', now);
     if (!busy) {
@@ -117,7 +117,7 @@ class Task {
         acquired = true;
         return null;
       }
-      startTimestamp = this.queue.now();
+      startTimestamp = this.queue.now;
       // console.log('txn  ', this.ref.key(), 'lease', item._lease, 'now', startTimestamp);
       // Check if another process beat us to it.
       if (item._lease && item._lease.expiry &&
@@ -158,11 +158,11 @@ class Task {
     Object.defineProperty(item, '$ref', {value: this.ref});
     Object.defineProperty(item, '$leaseTimeRemaining', {get: () => {
       if (!(item._lease && item._lease.expiry)) return 0;
-      return Math.max(0, item._lease.expiry - this.queue.now());
+      return Math.max(0, item._lease.expiry - this.queue.now;
     }});
     this.phase = 'work';
     return this.queue.callWorker(item).finally(() => {
-      const now = this.queue.now();
+      const now = this.queue.now;
       if (now > item._lease.expiry) {
         this.phase = 'exceed';
         // If it looks like we exceeded the lease time, double-check against the current item before
@@ -264,8 +264,8 @@ class Queue {
     process.exit(1);
   }
 
-  now() {
-    return this.ref.now();
+  get now() {
+    return this.ref.now;
   }
 
   addTask(snap) {
@@ -524,7 +524,7 @@ module.exports.extendLease = function(item, timeNeeded) {
     item._lease.extendLeasePromise = item.$ref.transaction(item2 => {
       error = null;
       timeNeededUsed = null;
-      const now = item.$ref.now();
+      const now = item.$ref.now;
       if (!item2) {
         error = new Error('Task disappeared, unable to extend lease.');
         error.firelease = {code: 'gone'};
