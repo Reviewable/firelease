@@ -2,7 +2,6 @@
 
 require('promise.prototype.finally').shim();
 const _ = require('lodash');
-const NodeFire = require('nodefire');
 const ms = require('ms');
 
 const PING_INTERVAL = ms('1m');
@@ -66,14 +65,14 @@ module.exports.captureError = error => {console.log(error.stack);};
 class Task {
   constructor(queue, snap) {
     this.queue = queue;
-    this.ref = snap.ref();
+    this.ref = snap.ref;
     this.key = Task.makeKey(snap);
     this.phase = 'wait';
     this.updateFrom(snap);
   }
 
   static makeKey(snap) {
-    return new NodeFire(snap.ref()).toString();
+    return snap.ref.toString();
   }
 
   updateFrom(snap) {
@@ -87,7 +86,7 @@ class Task {
     if (tasks[this.key] !== this || this.removed || this.working) return false;
     const now = this.queue.now;
     const busy = this.expiry + this.queue.leaseDelay > now;
-    // console.log('prepare', this.ref.key(), 'expiry', this.expiry, 'now', now);
+    // console.log('prepare', this.ref.key, 'expiry', this.expiry, 'now', now);
     if (!busy) {
       // Locally reserve for min lease duration to prevent concurrent transaction attempts.  Expiry
       // will be overwritten when transaction completes or task gets removed.
@@ -113,12 +112,12 @@ class Task {
     const transactionPromise = this.ref.transaction(item => {
       acquired = false;
       if (tasks[this.key] !== this || this.removed) return;
-      if (!item || this.ref.key() === PING_KEY) {
+      if (!item || this.ref.key === PING_KEY) {
         acquired = true;
         return null;
       }
       startTimestamp = this.queue.now;
-      // console.log('txn  ', this.ref.key(), 'lease', item._lease, 'now', startTimestamp);
+      // console.log('txn  ', this.ref.key, 'lease', item._lease, 'now', startTimestamp);
       // Check if another process beat us to it.
       if (item._lease && item._lease.expiry &&
           item._lease.expiry + this.queue.leaseDelay > startTimestamp) {
@@ -134,7 +133,7 @@ class Task {
     }, {detectStuck: 5, prefetchValue: false, timeout: ms('15s')});
     return transactionPromise.then(item => {
       if (!acquired) this.queue.countTaskAcquired(false);
-      if (!acquired || item === null || this.ref.key() === PING_KEY) return;
+      if (!acquired || item === null || this.ref.key === PING_KEY) return;
       if (!_.isObject(item)) throw new Error(`item not an object: ${item}`);
       Object.defineProperty(item, '$leaseTransaction', {value: transactionPromise.transaction});
       this.queue.countTaskAcquired(true);
@@ -158,7 +157,7 @@ class Task {
     Object.defineProperty(item, '$ref', {value: this.ref});
     Object.defineProperty(item, '$leaseTimeRemaining', {get: () => {
       if (!(item._lease && item._lease.expiry)) return 0;
-      return Math.max(0, item._lease.expiry - this.queue.now;
+      return Math.max(0, item._lease.expiry - this.queue.now);
     }});
     this.phase = 'work';
     return this.queue.callWorker(item).finally(() => {
@@ -471,7 +470,7 @@ function checkPings() {
       scanAll();
       if (pingCallback) {
         const sickQueueKeys =
-          _(results).reject('healthy').map(item => item.queue.ref.key()).value();
+          _(results).reject('healthy').map(item => item.queue.ref.key).value();
         const delays = _(results).pluck('leaseDelay').sortBy().value();
         const delaysMedian = delays.length % 2 ?
           delays[Math.floor(delays.length / 2)] :
