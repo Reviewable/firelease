@@ -1,6 +1,6 @@
 {
   "name": "firelease",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Firebase queue consumer for Node with at-least-once semantics",
   "main": "index.js",
   "scripts": {
@@ -31,7 +31,7 @@
     "promise.prototype.finally": "3.x"
   },
   "peerDependencies": {
-    "nodefire": "1.x"
+    "nodefire": "2.x"
   },
   "devDependencies": {
     "eslint": "^5.6.1"
