@@ -3,6 +3,7 @@
 require('promise.prototype.finally').shim();
 const _ = require('lodash');
 const ms = require('ms');
+const timers = require('safe-timers');
 
 const PING_INTERVAL = ms('1m');
 const PING_KEY = 'ping';
@@ -92,8 +93,8 @@ class Task {
       // will be overwritten when transaction completes or task gets removed.
       this.expiry = now + this.queue.constrainLeaseDuration(0);
     }
-    if (this.timeout) clearTimeout(this.timeout);
-    this.timeout = setTimeout(
+    if (this.timeout) this.timeout.clear();
+    this.timeout = timers.setTimeout(
       this.queue.process.bind(this.queue, this), this.expiry + this.queue.leaseDelay - now);
     return !busy;
   }
@@ -102,7 +103,7 @@ class Task {
     let startTimestamp;
     let acquired;
     this.working = true;
-    this.workingTimeout = setTimeout(() => {
+    this.workingTimeout = timers.setTimeout(() => {
       const e = new Error('Working task timeout');
       e.fingerprint = ['firelease', 'working', 'timeout'];
       e.extra = {phase: this.phase, expiry: this.expiry, removed: this.removed, key: this.key};
@@ -145,10 +146,10 @@ class Task {
       // Hardcoded retry -- hard to do anything smarter, since we failed to update the task in
       // Firebase.
       this.expiry = 0;
-      setTimeout(this.queue.scan, ms('3s'));
+      timers.setTimeout(this.queue.scan, ms('3s'));
     }).then(() => {
       this.working = false;
-      clearTimeout(this.workingTimeout);
+      if (this.workingTimeout) this.workingTimeout.clear();
       this.phase = this.removed ? 'done' : 'retry';
     });
   }
@@ -284,7 +285,7 @@ class Queue {
     if (!task) return;
     task.removed = true;
     if (task.timeout) {
-      clearTimeout(task.timeout);
+      task.timeout.clear();
       delete task.timeout;
     }
     if (!task.working) delete tasks[taskKey];
@@ -431,9 +432,9 @@ let pingIntervalHandle, pingCallback;
  */
 module.exports.pingQueues = function(callback, interval) {
   interval = interval && duration(interval) || PING_INTERVAL;
-  if (pingIntervalHandle) clearInterval(pingIntervalHandle);
+  if (pingIntervalHandle) pingIntervalHandle.clear();
   pingCallback = callback;
-  pingIntervalHandle = setInterval(() => {
+  pingIntervalHandle = timers.setInterval(() => {
     checkPings().catch(error => {
       error.firelease = _.extend(error.firelease || {}, {phase: 'pinging'});
       error.level = 'warning';
@@ -497,7 +498,7 @@ function waitUntilDeleted(ref, timeout) {
       resolve();
     }
     ref.on('value', onValue, reject);
-    if (timeout) setTimeout(() => {reject(new Error('timeout'));}, timeout);
+    if (timeout) timers.setTimeout(() => {reject(new Error('timeout'));}, timeout);
   });
 }
 
