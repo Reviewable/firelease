@@ -103,12 +103,6 @@ class Task {
     let startTimestamp;
     let acquired;
     this.working = true;
-    this.workingTimeout = timers.setTimeout(() => {
-      const e = new Error('Working task timeout');
-      e.fingerprint = ['firelease', 'working', 'timeout'];
-      e.extra = {phase: this.phase, expiry: this.expiry, removed: this.removed, key: this.key};
-      module.exports.captureError(e);
-    }, ms('10m'));
     this.phase = 'lease';
     const transactionPromise = this.ref.transaction(item => {
       acquired = false;
@@ -149,7 +143,6 @@ class Task {
       timers.setTimeout(this.queue.scan, ms('3s'));
     }).then(() => {
       this.working = false;
-      if (this.workingTimeout) this.workingTimeout.clear();
       this.phase = this.removed ? 'done' : 'retry';
     });
   }
