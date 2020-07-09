@@ -26,7 +26,7 @@
     "node": ">=8.0"
   },
   "dependencies": {
-    "lodash": "^3.10.1",
+    "lodash": "^4.17.16",
     "ms": "2.x",
     "promise.prototype.finally": "3.x",
     "safe-timers": "^1.1.0"
