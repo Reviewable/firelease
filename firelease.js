@@ -15,7 +15,7 @@ let globalNumConcurrent = 0;
 let shutdownResolve, shutdownReject, shutdownPromise;
 
 const scanAll = _.debounce(() => {
-  _.each(tasks, task => {
+  _.forEach(tasks, task => {
     task.queue.process(task);
   });
 }, 100);
@@ -135,7 +135,7 @@ class Task {
       return this.run(item, startTimestamp);
     }).catch(error => {
       console.log(`Queue item ${this.key} lease transaction error: ${error.message}`);
-      error.firelease = _.extend(error.firelease || {}, {itemKey: this.key, phase: 'leasing'});
+      error.firelease = _.assign(error.firelease || {}, {itemKey: this.key, phase: 'leasing'});
       module.exports.captureError(error);
       // Hardcoded retry -- hard to do anything smarter, since we failed to update the task in
       // Firebase.
@@ -180,11 +180,11 @@ class Task {
       }
     }).then(result => {
       this.phase = 'post';
-      if (_.isUndefined(result) || result === null) return this.ref.remove();  // common shortcut
+      if (_.isNil(result)) return this.ref.remove();  // common shortcut
       return this.ref.transaction(item2 => {
         if (!item2) return null;
         let value = _.isFunction(result) ? result(item2) : result;
-        if (_.isUndefined(value) || value === null) return null;
+        if (_.isNil(value)) return null;
         if (value === module.exports.RETRY) {
           if (item2._lease) delete item2._lease.time;
         } else if (_.isNumber(value) || _.isString(value)) {
@@ -203,13 +203,13 @@ class Task {
       });
     }, error => {
       console.log(`Queue item ${this.key} processing error: ${error.message}`);
-      error.firelease = _.extend(error.firelease || {}, {itemKey: this.key, phase: 'processing'});
+      error.firelease = _.assign(error.firelease || {}, {itemKey: this.key, phase: 'processing'});
       if (!error.level) error.level = 'warning';
       module.exports.captureError(error);
     }).catch(error => {
       console.log(`Queue item ${this.key} post-processing error: ${error.message}`);
       error.firelease =
-        _.extend(error.firelease || {}, {itemKey: this.key, phase: 'post-processing'});
+        _.assign(error.firelease || {}, {itemKey: this.key, phase: 'post-processing'});
       module.exports.captureError(error);
     });
   }
@@ -244,7 +244,7 @@ class Queue {
   }
 
   scan() {
-    _.each(tasks, task => {
+    _.forEach(tasks, task => {
       if (task.queue === this) task.queue.process(task);
     });
   }
@@ -252,7 +252,7 @@ class Queue {
   crash(error) {
     console.log(`Queue worker ${this.ref.toString()} interrupted:`, error);
     error.firelease =
-      _.extend(error.firelease || {}, {queue: this.ref.toString(), phase: 'crashing'});
+      _.assign(error.firelease || {}, {queue: this.ref.toString(), phase: 'crashing'});
     module.exports.captureError(error);
     process.exit(1);
   }
@@ -429,7 +429,7 @@ module.exports.pingQueues = function(callback, interval) {
   pingCallback = callback;
   pingIntervalHandle = timers.setInterval(() => {
     checkPings().catch(error => {
-      error.firelease = _.extend(error.firelease || {}, {phase: 'pinging'});
+      error.firelease = _.assign(error.firelease || {}, {phase: 'pinging'});
       error.level = 'warning';
       module.exports.captureError(error);
       pinging = false;
@@ -465,7 +465,7 @@ function checkPings() {
       if (pingCallback) {
         const sickQueueKeys =
           _(results).reject('healthy').map(item => item.queue.ref.key).value();
-        const delays = _(results).pluck('leaseDelay').sortBy().value();
+        const delays = _(results).map('leaseDelay').sortBy().value();
         const delaysMedian = delays.length % 2 ?
           delays[Math.floor(delays.length / 2)] :
           ((delays[Math.floor(delays.length / 2)] +
@@ -473,7 +473,7 @@ function checkPings() {
         pingCallback({
           healthy: _.every(results, 'healthy'),
           sickQueues: sickQueueKeys,
-          maxLatency: _.max(_.pluck(results, 'latency')),
+          maxLatency: _.max(_.map(results, 'latency')),
           tasksAcquired: _.reduce(results, (sum, result) => sum + result.tasksAcquired, 0),
           leaseDelays: {min: _.min(delays), max: _.max(delays), median: delaysMedian}
         });
@@ -546,7 +546,7 @@ module.exports.extendLease = function(item, timeNeeded) {
         delete item._lease.timeNeeded;
       }
       if (error) {
-        error.firelease = _.extend(
+        error.firelease = _.assign(
           error.firelease || {}, {itemKey: item.$ref.toString(), timeNeeded});
         return Promise.reject(error);
       }
