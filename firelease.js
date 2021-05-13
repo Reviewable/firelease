@@ -447,7 +447,7 @@ function checkPings() {
     return pingRef.transaction(item => {
       pingFree = !item;
       return item || {timestamp: start, _lease: {expiry: 1}};
-    }, {prefetchValue: false, timmeout: ms('10s')}).then(item => {
+    }, {prefetchValue: false, timeout: ms('10s')}).then(item => {
       if (!pingFree) return null;  // another process is currently pinging
       return waitUntilDeleted(pingRef, queue.options.healthyPingLatency + ms('10s')).then(() => {
         const latency = Date.now() - start;
