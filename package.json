@@ -35,6 +35,6 @@
     "nodefire": "3.x"
   },
   "devDependencies": {
-    "eslint": "7.x"
+    "eslint": "8.x"
   }
 }
