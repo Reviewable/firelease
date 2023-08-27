@@ -237,10 +237,12 @@ class Queue {
     // Need each queue's scan function to be debounced separately.
     this.scan = _.debounce(this.scan.bind(this), 100);
 
-    const topRef = ref.orderByChild('_lease/expiry').limitToFirst(this.options.bufferSize);
+    const bufferAll = this.options.bufferSize === Infinity;
+    const topRef =
+      bufferAll ? ref : ref.orderByChild('_lease/expiry').limitToFirst(this.options.bufferSize);
     topRef.on('child_added', this.addTask, this.crash, this);
     topRef.on('child_removed', this.removeTask, this.crash, this);
-    topRef.on('child_moved', this.addTask, this.crash, this);
+    topRef.on(bufferAll ? 'child_changed' : 'child_moved', this.addTask, this.crash, this);
   }
 
   scan() {
@@ -360,8 +362,9 @@ class Queue {
  * @param {Object} options Optional options, supporting the following values:
  *        maxConcurrent: {number} max number of tasks to handle concurrently for this worker.
  *        bufferSize: {number} upper bound on how many tasks to keep buffered and potentially go
- *          through leasing transactions in parallel; not worth setting higher than maxConcurrent,
- *          or higher than about 10.
+ *          through leasing transactions in parallel.  In principle, it's not worth setting higher
+ *          than `maxConcurrent`, but you can set it to `Infinity` to keep the entire task queue
+ *          buffered at all times if needed.
  *        minLease: {number | string} minimum duration of each lease, which should equal the maximum
  *          expected time a worker will take to handle a task.
  *        maxLease: {number | string} maximum duration of each lease; the lease duration is doubled
