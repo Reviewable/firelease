@@ -1,6 +1,6 @@
 {
   "name": "firelease",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "description": "Firebase queue consumer for Node with at-least-once semantics",
   "main": "index.js",
   "scripts": {

@@ -28,8 +28,9 @@ than zero, to properly balance task distribution between the processes.
 * `@param {Object} options` Optional options, supporting the following values:
   * `maxConcurrent: {number}` max number of tasks to handle concurrently for this worker.
   * `bufferSize: {number}` upper bound on how many tasks to keep buffered and potentially go through
-    leasing transactions in parallel; not worth setting higher than maxConcurrent, or higher than
-    about 10.
+    leasing transactions in parallel.  In principle, it's not worth setting higher than
+    `maxConcurrent`, but you can set it to `Infinity` to keep the entire task queue buffered at all
+    times if needed.
   * `minLease: {number | string}` minimum duration of each lease, which should equal the maximum
     expected time a worker will take to handle a task.
   * `maxLease: {number | string}` maximum duration of each lease; the lease duration is doubled each
