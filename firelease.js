@@ -1,6 +1,5 @@
 'use strict';
 
-require('promise.prototype.finally').shim();
 const _ = require('lodash');
 const ms = require('ms');
 const timers = require('safe-timers');
@@ -565,11 +564,10 @@ module.exports.extendLease = function(item, timeNeeded) {
 
 
 /**
- * Shuts down firelease by refusing to take new tasks, and invokes the callback once all currently
- * running tasks have completed.
- * @param {function} callback The callback to invoke when all tasks have completed.
+ * Shuts down firelease by refusing to take new tasks.
+ * @return Promise<void> A promise that resolves when the shutdown is complete.
  */
-module.exports.shutdown = function(callback) {
+module.exports.shutdown = function() {
   globalMaxConcurrent = 0;
   if (!shutdownPromise) {
     shutdownPromise = new Promise((resolve, reject) => {

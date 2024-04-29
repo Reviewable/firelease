@@ -1,10 +1,11 @@
 {
   "name": "firelease",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "Firebase queue consumer for Node with at-least-once semantics",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "lint": "eslint *.js"
   },
   "repository": {
     "type": "git",
@@ -23,12 +24,11 @@
   },
   "homepage": "https://github.com/pkaminski/firelease",
   "engines": {
-    "node": ">=8.0"
+    "node": ">=10.0"
   },
   "dependencies": {
     "lodash": "4.x",
     "ms": "2.x",
-    "promise.prototype.finally": "3.x",
     "safe-timers": "^1.1.0"
   },
   "peerDependencies": {
