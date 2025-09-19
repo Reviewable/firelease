@@ -9,6 +9,7 @@ const PING_KEY = 'ping';
 
 const queues = [];
 const tasks = {};
+const blacklistedTaskKeys = new Set();
 let globalMaxConcurrent = Number.MAX_VALUE;
 let globalNumConcurrent = 0;
 let shutdownResolve, shutdownReject, shutdownPromise;
@@ -265,6 +266,10 @@ class Queue {
   addTask(snap) {
     const taskKey = Task.makeKey(snap);
     let task = tasks[taskKey];
+    if (blacklistedTaskKeys.has(taskKey)) {
+      if (task) this.removeTask(taskKey);
+      return;
+    }
     if (task) {
       task.updateFrom(snap);
     } else {
@@ -273,8 +278,8 @@ class Queue {
     this.process(task);
   }
 
-  removeTask(snap) {
-    const taskKey = Task.makeKey(snap);
+  removeTask(snapOrKey) {
+    const taskKey = typeof snapOrKey === 'string' ? snapOrKey : Task.makeKey(snapOrKey);
     const task = tasks[taskKey];
     if (!task) return;
     task.removed = true;
@@ -475,6 +480,7 @@ function checkPings() {
         pingCallback({
           healthy: _.every(results, 'healthy'),
           sickQueues: sickQueueKeys,
+          stuckTasks: blacklistedTaskKeys.size,
           maxLatency: _.max(_.map(results, 'latency')),
           tasksAcquired: _.reduce(results, (sum, result) => sum + result.tasksAcquired, 0),
           leaseDelays: {min: _.min(delays), max: _.max(delays), median: delaysMedian}
@@ -562,10 +568,24 @@ module.exports.extendLease = function(item, timeNeeded) {
   return item._lease.extendLeasePromise;
 };
 
+/**
+ * Blacklist the given task key from ever being processed again.
+ * @param {string} taskKey The task key to blacklist.  This is the full Firebase URL of the task and
+ *        can be obtained from an error using `error.firelease.itemKey`.
+ * @return {boolean} True if the task key was added to the list, false if it was already present.
+ */
+module.exports.blacklist = function(taskKey) {
+  if (blacklistedTaskKeys.has(taskKey)) return false;
+  blacklistedTaskKeys.add(taskKey);
+  const task = tasks[taskKey];
+  if (task) task.queue.removeTask(taskKey);
+  return true;
+};
+
 
 /**
  * Shuts down firelease by refusing to take new tasks.
- * @return Promise<void> A promise that resolves when the shutdown is complete.
+ * @return {Promise<void>} A promise that resolves when the shutdown is complete.
  */
 module.exports.shutdown = function() {
   globalMaxConcurrent = 0;
