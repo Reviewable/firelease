@@ -78,6 +78,15 @@ and will always ping all queues.  Can be called more than once to change the par
 * `@param {number | string} interval` The interval at which to ping queues, to both check the
   current response latency and make sure no tasks are stuck.  Defaults to 1 minute.
 
+```function blacklist(taskKey)```
+
+Blacklist the given task key from ever being processed again.
+
+* `@param {string} taskKey` The task key to blacklist.  This is the full Firebase URL of the task
+  and can be obtained from an error using `error.firelease.itemKey`.
+
+* `@return {boolean}` True if the task key was added to the list, false if it was already present.
+
 
 ```function extendLease(item, timeNeeded)```
 
