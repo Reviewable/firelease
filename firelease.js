@@ -124,6 +124,7 @@ class Task {
       item._lease.expiry = startTimestamp + item._lease.time;
       item._lease.attempts = (item._lease.attempts || 0) + 1;
       if (!item._lease.initial) item._lease.initial = startTimestamp;
+      item._lease.busy = true;
       return this.queue.callPreprocess(item);
     }, {detectStuck: 5, prefetchValue: false, timeout: ms('15s')});
     return transactionPromise.then(item => {
@@ -191,12 +192,13 @@ class Task {
           value = duration(value);
           item2._lease = item2._lease || {};
           item2._lease.expiry = value > 1000000000000 ? value : startTimestamp + value;
-          item2._lease.time = null;
+          delete item2._lease.time;
         } else if (_.isObject(value)) {
           item2._lease = value;
         } else {
           throw new Error(`Unexpected return value from worker: ${value}`);
         }
+        if (item2._lease) delete item2._lease.busy;
         return item2;
       }, {prefetchValue: false}).then(item2 => {
         if (item2) item._lease = item2._lease;
@@ -206,6 +208,9 @@ class Task {
       error.firelease = _.assign(error.firelease || {}, {itemKey: this.key, phase: 'processing'});
       if (!error.level) error.level = 'warning';
       module.exports.captureError(error);
+      // Reset busy flag, unless we exceeded our original lease in which case we can't be sure
+      // whether another handler has already picked up the task so leave it be.
+      if (this.phase !== 'exceed') return this.ref.child('_lease/busy').set(false);
     }).catch(error => {
       console.log(`Queue item ${this.key} post-processing error: ${error.message}`);
       error.firelease =
