@@ -210,7 +210,7 @@ class Task {
       module.exports.captureError(error);
       // Reset busy flag, unless we exceeded our original lease in which case we can't be sure
       // whether another handler has already picked up the task so leave it be.
-      if (this.phase !== 'exceed') return this.ref.child('_lease/busy').set(false);
+      if (this.phase !== 'exceed') return this.ref.child('_lease/busy').set(null);
     }).catch(error => {
       console.log(`Queue item ${this.key} post-processing error: ${error.message}`);
       error.firelease =
