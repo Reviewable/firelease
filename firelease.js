@@ -3,6 +3,7 @@
 const _ = require('lodash');
 const ms = require('ms');
 const timers = require('safe-timers');
+const NodeFire = require('NodeFire').default;
 
 const PING_INTERVAL = ms('1m');
 const PING_KEY = 'ping';
@@ -458,7 +459,7 @@ function checkPings() {
     let pingFree;
     return pingRef.transaction(item => {
       pingFree = !item;
-      return item || {timestamp: start, _lease: {expiry: 1}};
+      return item || {timestamp: start, _lease: {expiry: NodeFire.SERVER_TIMESTAMP}};
     }, {prefetchValue: false, timeout: ms('10s')}).then(item => {
       if (!pingFree) return null;  // another process is currently pinging
       return waitUntilDeleted(pingRef, queue.options.healthyPingLatency + ms('10s')).then(() => {
