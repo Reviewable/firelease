@@ -3,7 +3,7 @@
 const _ = require('lodash');
 const ms = require('ms');
 const timers = require('safe-timers');
-const NodeFire = require('NodeFire').default;
+const NodeFire = require('nodefire').default;
 
 const PING_INTERVAL = ms('1m');
 const PING_KEY = 'ping';
