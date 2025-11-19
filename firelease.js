@@ -136,12 +136,13 @@ class Task {
       this.queue.countTaskAcquired(true);
       return this.run(item, startTimestamp);
     }).catch(error => {
-      console.log(`Queue item ${this.key} lease transaction error: ${error.message}`);
-      error.firelease = _.assign(error.firelease || {}, {itemKey: this.key, phase: 'leasing'});
-      module.exports.captureError(error);
       // Hardcoded retry -- hard to do anything smarter, since we failed to update the task in
       // Firebase.
       this.expiry = 0;
+      if (/timeout/i.test(error) && !this.queue.connected) return;
+      console.log(`Queue item ${this.key} lease transaction error: ${error.message}`);
+      error.firelease = _.assign(error.firelease || {}, {itemKey: this.key, phase: 'leasing'});
+      module.exports.captureError(error);
       timers.setTimeout(this.queue.scan, ms('3s'));
     }).then(() => {
       this.working = false;
@@ -205,6 +206,7 @@ class Task {
         if (item2) item._lease = item2._lease;
       });
     }, error => {
+      if (/timeout/i.test(error) && !this.queue.connected) return;
       console.log(`Queue item ${this.key} processing error: ${error.message}`);
       error.firelease = _.assign(error.firelease || {}, {itemKey: this.key, phase: 'processing'});
       if (!error.level) error.level = 'warning';
@@ -213,6 +215,7 @@ class Task {
       // whether another handler has already picked up the task so leave it be.
       if (this.phase !== 'exceed') return this.ref.child('_lease/busy').set(null);
     }).catch(error => {
+      if (/timeout/i.test(error) && !this.queue.connected) return;
       console.log(`Queue item ${this.key} post-processing error: ${error.message}`);
       error.firelease =
         _.assign(error.firelease || {}, {itemKey: this.key, phase: 'post-processing'});
@@ -239,6 +242,7 @@ class Queue {
     this.tasksAcquired = 0;
     this.worker = worker;
     this.ref = ref;
+    this.connected = false;
 
     // Need each queue's scan function to be debounced separately.
     this.scan = _.debounce(this.scan.bind(this), 100);
@@ -249,6 +253,13 @@ class Queue {
     topRef.on('child_added', this.addTask, this.crash, this);
     topRef.on('child_removed', this.removeTask, this.crash, this);
     topRef.on(bufferAll ? 'child_changed' : 'child_moved', this.addTask, this.crash, this);
+
+    ref.root.child('.info/connected').on('value', snap => {
+      this.connected = snap.val();
+      // On reconnection, rescan all tasks but give Firebase a few seconds to resync values from the
+      // server.
+      if (this.connected) setTimeout(() => {this.scan();}, ms('3s'));
+    });
   }
 
   scan() {
@@ -314,7 +325,7 @@ class Queue {
   }
 
   process(task) {
-    if (this.hasQuota() && task.prepare()) {
+    if (this.connected && this.hasQuota() && task.prepare()) {
       globalNumConcurrent++;
       this.numConcurrent++;
       task.process().then(() => {
