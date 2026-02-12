@@ -1,6 +1,6 @@
 {
   "name": "firelease",
-  "version": "3.1.1",
+  "version": "3.1.2",
   "description": "Firebase queue consumer for Node with at-least-once semantics",
   "main": "index.js",
   "scripts": {
@@ -25,8 +25,8 @@
   "dependencies": {
     "lodash": "4.x",
     "ms": "2.x",
-    "safe-timers": "^1.1.0",
-    "nodefire": "3.x"
+    "nodefire": "4.x",
+    "safe-timers": "^1.1.0"
   },
   "devDependencies": {
     "eslint": "8.x"
