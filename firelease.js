@@ -242,24 +242,93 @@ class Queue {
     this.tasksAcquired = 0;
     this.worker = worker;
     this.ref = ref;
+    this.topRef = undefined;
+    this.mode = 'initial';  // one of 'initial', 'normal', 'failed', 'failsafe', 'recovery'
+    this.epoch = 0;
     this.connected = false;
 
     // Need each queue's scan function to be debounced separately.
     this.scan = _.debounce(this.scan.bind(this), 100);
 
-    const bufferAll = this.options.bufferSize === Infinity;
-    const topRef =
-      bufferAll ? ref : ref.orderByChild('_lease/expiry').limitToFirst(this.options.bufferSize);
-    topRef.on('child_added', this.addTask, this.crash, this);
-    topRef.on('child_removed', this.removeTask, this.crash, this);
-    topRef.on(bufferAll ? 'child_changed' : 'child_moved', this.addTask, this.crash, this);
+    this.listen();
 
     ref.root.child('.info/connected').on('value', snap => {
+      if (this.connected === snap.val()) return;
       this.connected = snap.val();
-      // On reconnection, rescan all tasks but give Firebase a few seconds to resync values from the
-      // server.
-      if (this.connected) setTimeout(() => {this.scan();}, ms('3s'));
+      if (this.connected) {
+        // On reconnection, rescan all tasks but give Firebase a few seconds to resync values from
+        // the server.
+        _.delay(() => {
+          if (!this.connected) return;
+          this.scan();
+        }, ms('5s'));
+      } else {
+        this.epoch += 1;
+        const failed =
+          (this.mode === 'initial' || this.mode === 'recovery') &&
+          !_.some(
+            queues, queue => queue.mode === 'failed' && queue.ref.root.isEqual(this.ref.root));
+        if (failed) {
+          if (this.mode === 'initial') {
+            console.log(`Queue worker ${this.ref} failed to load tasks, entering failsafe mode`);
+            module.exports.captureError(_.assign(
+              new Error('Queue worker entering failsafe mode'),
+              {extra: {queue: this.ref.toString()}}));
+          }
+          this.mode = 'failed';
+          _.defer(() => {this.mode = 'failsafe';});
+          this.listen(true);
+          _.delay(() => {
+            if (this.mode !== 'failsafe') return;
+            this.mode = 'recovery';
+            this.listen();
+          }, _.random(ms('1m'), ms('2m')));
+        } else {
+          this.mode = 'initial';
+          this.listen();
+        }
+      }
     });
+  }
+
+  listen(failsafe) {
+    if (this.topRef) {
+      this.topRef.off('child_added', this.addTask, this);
+      this.topRef.off('child_removed', this.removeTask, this);
+      this.topRef.off(
+        this.topRef === this.ref ? 'child_changed' : 'child_moved', this.addTask, this);
+      _.forEach(tasks, (task, taskKey) => {
+        if (task.queue === this) this.removeTask(taskKey);
+      });
+    }
+
+    let bufferSize = this.options.bufferSize;
+    if (failsafe) bufferSize = Math.min(bufferSize, 5);
+    const bufferAll = bufferSize === Infinity;
+    this.topRef =
+      bufferAll ? this.ref : this.ref.orderByChild('_lease/expiry').limitToFirst(bufferSize);
+    this.topRef.on('child_added', this.addTask, this.crash, this);
+    this.topRef.on('child_removed', this.removeTask, this.crash, this);
+    this.topRef.on(bufferAll ? 'child_changed' : 'child_moved', this.addTask, this.crash, this);
+
+    if (!failsafe) {
+      const epoch = this.epoch;
+      this.ref.orderByChild('_lease/expiry').limitToFirst(1).get({timeout: ms('10s')}).then(() => {
+        if (this.epoch !== epoch) return;
+        const recovered = this.mode === 'recovery' ? ', exiting failsafe mode' : '';
+        console.log(`Queue worker ${this.ref} loaded tasks${recovered}`);
+        if (this.mode === 'initial' || this.mode === 'recovery') this.mode = 'normal';
+      }, e => {
+        if (e.code === 'timeout') {
+          if (this.epoch !== epoch) return;
+          console.log(`Queue worker ${this.ref} loading timeout, forcing failsafe mode`);
+          this.ref.database.goOffline();
+          _.defer(() => this.ref.database.goOnline());
+        } else {
+          this.crash(e);
+        }
+      });
+    }
   }
 
   scan() {
@@ -269,11 +338,13 @@ class Queue {
   }
 
   crash(error) {
-    console.log(`Queue worker ${this.ref.toString()} interrupted:`, error);
+    console.log(`Queue worker ${this.ref} interrupted:`, error.message);
     error.firelease =
       _.assign(error.firelease || {}, {queue: this.ref.toString(), phase: 'crashing'});
     module.exports.captureError(error);
-    process.exit(1);
+    // Give the error capture a chance to process before exiting.
+    _.delay(() => {process.exit(1);}, ms('3s'));
+
   }
 
   get now() {
