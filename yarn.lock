@@ -567,17 +567,6 @@ __metadata:
   languageName: node
   linkType: hard
 
-"axios@npm:^1.2.1":
-  version: 1.14.0
-  resolution: "axios@npm:1.14.0"
-  dependencies:
-    follow-redirects: "npm:^1.15.11"
-    form-data: "npm:^4.0.5"
-    proxy-from-env: "npm:^2.1.0"
-  checksum: 10c0/2541f4aa215a7d1842429dad006fc682d82bc0e74bd14500823f7d8cce3bbae0e0a8c328c8538946718f366ab8ce5a4c12e9ad40e5a0f3482ff8bff0cd115d45
-  languageName: node
-  linkType: hard
-
 "balanced-match@npm:^1.0.0":
   version: 1.0.2
   resolution: "balanced-match@npm:1.0.2"
@@ -1080,15 +1069,14 @@ __metadata:
   languageName: node
   linkType: hard
 
-"firebase-childrenkeys@npm:^2.3.5":
-  version: 2.6.2
-  resolution: "firebase-childrenkeys@npm:2.6.2"
+"firebase-childrenkeys@npm:^3.0.0":
+  version: 3.0.0
+  resolution: "firebase-childrenkeys@npm:3.0.0"
   dependencies:
-    axios: "npm:^1.2.1"
     sleep-promise: "npm:^9.1.0"
   peerDependencies:
     firebase-admin: 5.x || 6.x || 7.x || 8.x || 9.x || 10.x || 11.x || 12.x || 13.x
-  checksum: 10c0/a896c3a522d5a0965e8117dfdd5c65d7d92e2aa6489ebb6d62bfa61acea81db58f242e2ec8cc8a781863e9e8973d7433db671f73fdcb0606dbe256173f29b542
+  checksum: 10c0/d8690a8277670226728ac96ff7e75a2720fcc556c2ae1dc028c9dfe1c98626d8ccd42242aedbe5369d804996d54f292cbe9ac5980c44b1bac1d3fc3b618fb477
   languageName: node
   linkType: hard
 
@@ -1127,7 +1115,7 @@ __metadata:
     eslint: "npm:8.x"
     lodash: "npm:4.x"
     ms: "npm:2.x"
-    nodefire: "npm:4.x"
+    nodefire: "npm:4.x || 5.x"
     npm-check-updates: "npm:^20.0.0"
     safe-timers: "npm:^1.1.0"
   languageName: unknown
@@ -1151,16 +1139,6 @@ __metadata:
   languageName: node
   linkType: hard
 
-"follow-redirects@npm:^1.15.11":
-  version: 1.15.11
-  resolution: "follow-redirects@npm:1.15.11"
-  peerDependenciesMeta:
-    debug:
-      optional: true
-  checksum: 10c0/d301f430542520a54058d4aeeb453233c564aaccac835d29d15e050beb33f339ad67d9bddbce01739c5dc46a6716dbe3d9d0d5134b1ca203effa11a7ef092343
-  languageName: node
-  linkType: hard
-
 "form-data@npm:^2.5.5":
   version: 2.5.5
   resolution: "form-data@npm:2.5.5"
@@ -1172,19 +1150,6 @@ __metadata:
     mime-types: "npm:^2.1.35"
     safe-buffer: "npm:^5.2.1"
   checksum: 10c0/7fb70447849fc9bce4d01fe9a626f6587441f85779a2803b67f803e1ab52b0bd78db0a7acd80d944c665f68ca90936c327f1244b730719b638a0219e98b20488
-  languageName: node
-  linkType: hard
-
-"form-data@npm:^4.0.5":
-  version: 4.0.5
-  resolution: "form-data@npm:4.0.5"
-  dependencies:
-    asynckit: "npm:^0.4.0"
-    combined-stream: "npm:^1.0.8"
-    es-set-tostringtag: "npm:^2.1.0"
-    hasown: "npm:^2.0.2"
-    mime-types: "npm:^2.1.12"
-  checksum: 10c0/dd6b767ee0bbd6d84039db12a0fa5a2028160ffbfaba1800695713b46ae974a5f6e08b3356c3195137f8530dcd9dfcb5d5ae1eeff53d0db1e5aad863b619ce3b
   languageName: node
   linkType: hard
 
@@ -1848,7 +1813,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"mime-types@npm:^2.1.12, mime-types@npm:^2.1.35":
+"mime-types@npm:^2.1.35":
   version: 2.1.35
   resolution: "mime-types@npm:2.1.35"
   dependencies:
@@ -1928,17 +1893,17 @@ __metadata:
   languageName: node
   linkType: hard
 
-"nodefire@npm:4.x":
-  version: 4.1.0
-  resolution: "nodefire@npm:4.1.0"
+"nodefire@npm:4.x || 5.x":
+  version: 5.0.0
+  resolution: "nodefire@npm:5.0.0"
   dependencies:
     firebase-admin: "npm:10.x || 11.x || 12.x || 13.x"
-    firebase-childrenkeys: "npm:^2.3.5"
+    firebase-childrenkeys: "npm:^3.0.0"
     firefight: "npm:1.x"
     lodash: "npm:^4.17.21"
     lru-cache: "npm:11.x"
     safe-timers: "npm:^1.1.0"
-  checksum: 10c0/24dae3d2aca37536f6f9fd4b7eeb5a05c16867d3bc0103addc2a83d2ba02c7083b9d628ab634f7aec872237b0e1ee261e50a728791fe10bbd4c6482b0691675e
+  checksum: 10c0/c5db96659b45deb024f9e2163f304a86df2d0a37d07727c133198a834dca62a7ebe04bdeb75736b53063ecc0dfaf4ff8b80279c74ec2875dd9210d5cb2816192
   languageName: node
   linkType: hard
 
@@ -2070,13 +2035,6 @@ __metadata:
     "@types/node": "npm:>=13.7.0"
     long: "npm:^5.0.0"
   checksum: 10c0/913b676109ffb3c05d3d31e03a684e569be91f3bba8613da4a683d69d9dba948daa2afd7d2e7944d1aa6c417890c35d9d9a8883c1160affafb0f9670d59ef722
-  languageName: node
-  linkType: hard
-
-"proxy-from-env@npm:^2.1.0":
-  version: 2.1.0
-  resolution: "proxy-from-env@npm:2.1.0"
-  checksum: 10c0/ed01729fd4d094eab619cd7e17ce3698b3413b31eb102c4904f9875e677cd207392795d5b4adee9cec359dfd31c44d5ad7595a3a3ad51c40250e141512281c58
   languageName: node
   linkType: hard
 
