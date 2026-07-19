@@ -7,6 +7,7 @@
   "scripts": {
     "update": "yarn up -R '*' && yarn dedupe --strategy highest",
     "latest": "yarn npm-check-updates -i -m --packageManager yarn --install never && yarn install",
+    "upgrade": "reviewable-upgrade",
     "lint": "eslint *.js"
   },
   "repository": "https://github.com/Reviewable/firelease",
@@ -32,7 +33,9 @@
     "safe-timers": "^1.1.0"
   },
   "devDependencies": {
-    "eslint": "8.x",
-    "npm-check-updates": "^22.2.9"
+    "eslint": "^10.7.0",
+    "globals": "^17.7.0",
+    "npm-check-updates": "^22.2.9",
+    "reviewable-configs": "Reviewable/reviewable-configs#master"
   }
 }
