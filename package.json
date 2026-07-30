@@ -1,6 +1,6 @@
 {
   "name": "firelease",
-  "version": "3.3.0",
+  "version": "3.4.0",
   "packageManager": "yarn@4.13.0",
   "description": "Firebase queue consumer for Node with at-least-once semantics",
   "main": "index.js",
@@ -8,7 +8,8 @@
     "update": "yarn up -R '*' && yarn dedupe --strategy highest",
     "latest": "yarn npm-check-updates -i -m --packageManager yarn --install never && yarn install",
     "upgrade": "reviewable-upgrade",
-    "lint": "eslint *.js"
+    "lint": "eslint *.js tests/*.js",
+    "test": "node tests/multiple_sources.test.js"
   },
   "repository": "https://github.com/Reviewable/firelease",
   "keywords": [

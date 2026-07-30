@@ -14,23 +14,25 @@ To use generators, make sure to set `Promise.co` to a `co`-compatible function.
 
 The module exposes these functions:
 
-```function attachWorker(ref, options, worker)```
+```function attachWorker(refOrRefs, options, worker)```
 
 Attaches a worker function to consume tasks from a queue.  You should normally attach no more
 than one worker per path in any given process, but it's OK to run multiple processes on the same
 paths concurrently.  If you do, you probably want to set `maxLeaseDelay` to something greater
 than zero, to properly balance task distribution between the processes.
 
-* `@param {Nodefire} ref` A Nodefire ref to the queue root in Firebase.  Individual tasks will be
-  children of this root and must be objects.  The `_lease` key is reserved for use by
-  Firelease in each task.
+* `@param {Nodefire | Nodefire[]} refOrRefs` A Nodefire ref, or an array of refs, to the queue roots
+  in Firebase.  When multiple refs are supplied, their tasks form one logical queue: they use the
+  same worker and share `maxConcurrent`, `leaseDelay`, and the other queue options.  The refs may
+  point to different paths and databases.  Individual tasks will be children of these roots and
+  must be objects.  The `_lease` key is reserved for use by Firelease in each task.
 
 * `@param {Object} options` Optional options, supporting the following values:
   * `maxConcurrent: {number}` max number of tasks to handle concurrently for this worker.
-  * `bufferSize: {number}` upper bound on how many tasks to keep buffered and potentially go through
-    leasing transactions in parallel.  In principle, it's not worth setting higher than
-    `maxConcurrent`, but you can set it to `Infinity` to keep the entire task queue buffered at all
-    times if needed.
+  * `bufferSize: {number}` upper bound on how many tasks to keep buffered from each source and
+    potentially go through leasing transactions in parallel.  In principle, it's not worth setting
+    higher than `maxConcurrent`, but you can set it to `Infinity` to keep the entire task queue
+    buffered at all times if needed.
   * `minLease: {number | string}` minimum duration of each lease, which should equal the maximum
     expected time a worker will take to handle a task.
   * `maxLease: {number | string}` maximum duration of each lease; the lease duration is doubled each
