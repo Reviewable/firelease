@@ -3,14 +3,12 @@ Firelease
 
 [![Project Status: Active - The project has reached a stable, usable state and is being actively developed.](http://www.repostatus.org/badges/latest/active.svg)](http://www.repostatus.org/#active)
 
-A Firebase queue consumer for Node with at-least-once and at-most-once semantics, fine-grained concurrency controls, and support for promises and generators.  Built on top of [Nodefire](https://github.com/pkaminski/nodefire).
+A Firebase queue consumer for Node with at-least-once and at-most-once semantics, fine-grained concurrency controls, and support for promises.  Built on top of [Nodefire](https://github.com/pkaminski/nodefire).
 
 API
 ---
 
 All durations can be specified as either a human-readable string, or a number of milliseconds.
-
-To use generators, make sure to set `Promise.co` to a `co`-compatible function.
 
 The module exposes these functions:
 
@@ -66,8 +64,7 @@ than zero, to properly balance task distribution between the processes.
   * An epoch in milliseconds greater than 1000000000000 at which the task should be tried.
   * A function that takes the task as argument and returns one of the values above.  This function
     will be executed in a transaction to ensure atomicity.
-  All of these values can also be wrapped in a promise or a generator, which will be dealt with
-  appropriately.
+  All of these values can also be wrapped in a promise.
 
 
 ```function pingQueues(callback, interval)```

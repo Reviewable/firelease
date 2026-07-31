@@ -197,13 +197,15 @@ async function run() {
   firelease.attachWorker(
     [firstSource, secondSource],
     {bufferSize: Infinity, maxConcurrent: 1, minLease: '1s'},
-    item => {
+    async item => {
       active++;
       maxActive = Math.max(maxActive, active);
       calls.push(item.$ref.toString());
       leaseTimesRemaining.push(item.$leaseTimeRemaining);
       if (calls.length === 1) {
-        return firstBlocked.then(() => {active--;});
+        await firstBlocked;
+        active--;
+        return;
       }
       active--;
     }
@@ -248,6 +250,20 @@ async function run() {
   const duplicateTask = duplicateSource.addTask('task', {payload: 4});
   await waitFor(() => duplicateTaskUrl && !duplicateTask.value);
   assert.strictEqual(duplicateTaskUrl, duplicateTask.toString());
+
+  const extensionSource = new FakeQueueRef('extension-database', 'queues/extension');
+  let extensionComplete = false;
+  firelease.attachWorker(extensionSource, {minLease: '1s'}, async item => {
+    const initialExpiry = item._lease.expiry;
+    const firstExtension = firelease.extendLease(item, '2s');
+    const secondExtension = firelease.extendLease(item, '3s');
+    assert.strictEqual(firstExtension, secondExtension);
+    await firstExtension;
+    assert(item._lease.expiry >= initialExpiry + 5000);
+    extensionComplete = true;
+  });
+  const extensionTask = extensionSource.addTask('task', {payload: 5});
+  await waitFor(() => extensionComplete && !extensionTask.value);
 }
 
 
