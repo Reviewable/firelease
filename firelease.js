@@ -65,8 +65,9 @@ module.exports.captureError = error => {console.log(error.stack);};
 
 
 class Task {
-  constructor(queue, snap) {
-    this.queue = queue;
+  constructor(source, snap) {
+    this.source = source;
+    this.queue = source.queue;
     this.ref = snap.ref;
     this.key = Task.makeKey(snap);
     this.phase = 'wait';
@@ -79,14 +80,14 @@ class Task {
 
   updateFrom(snap) {
     const value = snap.val();
-    this.expiry = value && value._lease && value._lease.expiry || this.queue.now;
+    this.expiry = value && value._lease && value._lease.expiry || this.ref.now;
     // console.log('update', this.key, 'expiry', this.expiry);
     delete this.removed;
   }
 
   prepare() {
     if (tasks[this.key] !== this || this.removed || this.working) return false;
-    const now = this.queue.now;
+    const now = this.ref.now;
     const busy = this.expiry + this.queue.leaseDelay > now;
     // console.log('prepare', this.ref.key, 'expiry', this.expiry, 'now', now);
     if (!busy) {
@@ -112,7 +113,7 @@ class Task {
         acquired = true;
         return null;
       }
-      startTimestamp = this.queue.now;
+      startTimestamp = this.ref.now;
       // console.log('txn  ', this.ref.key, 'lease', item._lease, 'now', startTimestamp);
       // Check if another process beat us to it.
       if (item._lease && item._lease.expiry &&
@@ -139,7 +140,7 @@ class Task {
       // Hardcoded retry -- hard to do anything smarter, since we failed to update the task in
       // Firebase.
       this.expiry = 0;
-      if (/timeout/i.test(error.message) && !this.queue.connected) return;
+      if (/timeout/i.test(error.message) && !this.source.connected) return;
       console.log(`Queue item ${this.key} lease transaction error: ${error.message}`);
       error.firelease = _.assign(error.firelease || {}, {itemKey: this.key, phase: 'leasing'});
       module.exports.captureError(error);
@@ -154,11 +155,11 @@ class Task {
     Object.defineProperty(item, '$ref', {value: this.ref});
     Object.defineProperty(item, '$leaseTimeRemaining', {get: () => {
       if (!(item._lease && item._lease.expiry)) return 0;
-      return Math.max(0, item._lease.expiry - this.queue.now);
+      return Math.max(0, item._lease.expiry - this.ref.now);
     }});
     this.phase = 'work';
     return this.queue.callWorker(item).finally(() => {
-      const now = this.queue.now;
+      const now = this.ref.now;
       if (now > item._lease.expiry) {
         this.phase = 'exceed';
         // If it looks like we exceeded the lease time, double-check against the current item before
@@ -206,7 +207,7 @@ class Task {
         if (item2) item._lease = item2._lease;
       });
     }, error => {
-      if (/timeout/i.test(error.message) && !this.queue.connected) return;
+      if (/timeout/i.test(error.message) && !this.source.connected) return;
       console.log(`Queue item ${this.key} processing error: ${error.message}`);
       error.firelease = _.assign(error.firelease || {}, {itemKey: this.key, phase: 'processing'});
       if (!error.level) error.level = 'warning';
@@ -215,7 +216,7 @@ class Task {
       // whether another handler has already picked up the task so leave it be.
       if (this.phase !== 'exceed') return this.ref.child('_lease/busy').set(null);
     }).catch(error => {
-      if (/timeout/i.test(error.message) && !this.queue.connected) return;
+      if (/timeout/i.test(error.message) && !this.source.connected) return;
       console.log(`Queue item ${this.key} post-processing error: ${error.message}`);
       error.firelease =
         _.assign(error.firelease || {}, {itemKey: this.key, phase: 'post-processing'});
@@ -225,34 +226,20 @@ class Task {
 }
 
 
-class Queue {
-  constructor(ref, options, worker) {
-    if (_.isFunction(options)) {
-      worker = options;
-      options = {};
-    }
-    this.options = _.defaults({}, options, module.exports.defaults);
-    this.options.minLease = duration(this.options.minLease);
-    this.options.maxLease = duration(this.options.maxLease);
-    this.options.minLeaseDelay = this.leaseDelay = duration(this.options.leaseDelay);
-    delete this.options.leaseDelay;
-    this.options.healthyPingLatency = duration(this.options.healthyPingLatency);
-    this.options.maxLeaseDelay = duration(this.options.maxLeaseDelay);
-    this.numConcurrent = 0;
-    this.tasksAcquired = 0;
-    this.worker = worker;
+class QueueSource {
+  constructor(queue, ref) {
+    this.queue = queue;
     this.ref = ref;
     this.topRef = undefined;
     this.mode = 'initial';  // one of 'initial', 'normal', 'failed', 'failsafe', 'recovery'
     this.epoch = 0;
     this.connected = false;
+  }
 
-    // Need each queue's scan function to be debounced separately.
-    this.scan = _.debounce(this.scan.bind(this), 100);
-
+  start() {
     this.listen();
 
-    ref.root.child('.info/connected').on('value', snap => {
+    this.ref.root.child('.info/connected').on('value', snap => {
       if (this.connected === snap.val()) return;
       this.connected = snap.val();
       if (this.connected) {
@@ -260,14 +247,15 @@ class Queue {
         // the server.
         _.delay(() => {
           if (!this.connected) return;
-          this.scan();
+          this.queue.scan();
         }, ms('5s'));
       } else {
         this.epoch += 1;
         const failed =
           (this.mode === 'initial' || this.mode === 'recovery') &&
-          !_.some(
-            queues, queue => queue.mode === 'failed' && queue.ref.root.isEqual(this.ref.root));
+          !_.some(queues, queue => _.some(
+            queue.sources,
+            source => source.mode === 'failed' && source.ref.root.isEqual(this.ref.root)));
         if (failed) {
           if (this.mode === 'initial') {
             console.log(`Queue worker ${this.ref} failed to load tasks, entering failsafe mode`);
@@ -298,11 +286,11 @@ class Queue {
       this.topRef.off(
         this.topRef === this.ref ? 'child_changed' : 'child_moved', this.addTask, this);
       _.forEach(tasks, (task, taskKey) => {
-        if (task.queue === this) this.removeTask(taskKey);
+        if (task.source === this) this.removeTask(taskKey);
       });
     }
 
-    let bufferSize = this.options.bufferSize;
+    let bufferSize = this.queue.options.bufferSize;
     if (failsafe) bufferSize = Math.min(bufferSize, 5);
     const bufferAll = bufferSize === Infinity;
     this.topRef =
@@ -331,12 +319,6 @@ class Queue {
     }
   }
 
-  scan() {
-    _.forEach(tasks, task => {
-      if (task.queue === this) task.queue.process(task);
-    });
-  }
-
   crash(error) {
     console.log(`Queue worker ${this.ref} interrupted:`, error.message);
     error.firelease =
@@ -345,10 +327,6 @@ class Queue {
     // Give the error capture a chance to process before exiting.
     _.delay(() => {process.exit(1);}, ms('3s'));
 
-  }
-
-  get now() {
-    return this.ref.now;
   }
 
   addTask(snap) {
@@ -363,19 +341,57 @@ class Queue {
     } else {
       task = tasks[taskKey] = new Task(this, snap);
     }
-    this.process(task);
+    this.queue.process(task);
   }
 
   removeTask(snapOrKey) {
     const taskKey = typeof snapOrKey === 'string' ? snapOrKey : Task.makeKey(snapOrKey);
     const task = tasks[taskKey];
-    if (!task) return;
+    if (!task || task.source !== this) return;
     task.removed = true;
     if (task.timeout) {
       task.timeout.clear();
       delete task.timeout;
     }
     if (!task.working) delete tasks[taskKey];
+  }
+}
+
+
+class Queue {
+  constructor(refOrRefs, options, worker) {
+    if (_.isFunction(options)) {
+      worker = options;
+      options = {};
+    }
+    const refs = _(refOrRefs).castArray().uniqBy(item => item.toString()).value();
+    if (!refs.length) throw new Error('At least one queue ref is required');
+    this.refs = refs;
+    this.ref = this.refs[0];
+    this.options = _.defaults({}, options, module.exports.defaults);
+    this.options.minLease = duration(this.options.minLease);
+    this.options.maxLease = duration(this.options.maxLease);
+    this.options.minLeaseDelay = this.leaseDelay = duration(this.options.leaseDelay);
+    delete this.options.leaseDelay;
+    this.options.healthyPingLatency = duration(this.options.healthyPingLatency);
+    this.options.maxLeaseDelay = duration(this.options.maxLeaseDelay);
+    this.numConcurrent = 0;
+    this.tasksAcquired = 0;
+    this.worker = worker;
+    this.sources = _.map(this.refs, sourceRef => new QueueSource(this, sourceRef));
+
+    // Need each queue's scan function to be debounced separately.
+    this.scan = _.debounce(this.scan.bind(this), 100);
+  }
+
+  start() {
+    _.forEach(this.sources, source => {source.start();});
+  }
+
+  scan() {
+    _.forEach(tasks, task => {
+      if (task.queue === this) this.process(task);
+    });
   }
 
   hasQuota() {
@@ -396,7 +412,7 @@ class Queue {
   }
 
   process(task) {
-    if (this.connected && this.hasQuota() && task.prepare()) {
+    if (task.source.connected && this.hasQuota() && task.prepare()) {
       globalNumConcurrent++;
       this.numConcurrent++;
       task.process().then(() => {
@@ -448,15 +464,16 @@ class Queue {
  *
  * All durations can be specified as either a human-readable string, or a number of milliseconds.
  *
- * @param {NodeFire} ref A NodeFire ref to the queue root in Firebase.  Individual tasks will be
- *        children of this root and must be objects.  The '_lease' key is reserved for use by
- *        Firelease in each task.
+ * @param {NodeFire | NodeFire[]} refOrRefs One or more NodeFire refs to queue roots in Firebase.
+ *        Individual tasks will be children of these roots and must be objects.  All refs form one
+ *        logical queue and share the same worker and concurrency limits.  The '_lease' key is
+ *        reserved for use by Firelease in each task.
  * @param {Object} options Optional options, supporting the following values:
  *        maxConcurrent: {number} max number of tasks to handle concurrently for this worker.
- *        bufferSize: {number} upper bound on how many tasks to keep buffered and potentially go
- *          through leasing transactions in parallel.  In principle, it's not worth setting higher
- *          than `maxConcurrent`, but you can set it to `Infinity` to keep the entire task queue
- *          buffered at all times if needed.
+ *        bufferSize: {number} upper bound on how many tasks to keep buffered from each source and
+ *          potentially go through leasing transactions in parallel.  In principle, it's not worth
+ *          setting higher than `maxConcurrent`, but you can set it to `Infinity` to keep the entire
+ *          task queue buffered at all times if needed.
  *        minLease: {number | string} minimum duration of each lease, which should equal the maximum
  *          expected time a worker will take to handle a task.
  *        maxLease: {number | string} maximum duration of each lease; the lease duration is doubled
@@ -492,8 +509,10 @@ class Queue {
  *        All of these values can also be wrapped in a promise or a generator, which will be dealt
  *        with appropriately.
  */
-module.exports.attachWorker = function(ref, options, worker) {
-  queues.push(new Queue(ref, options, worker));
+module.exports.attachWorker = function(refOrRefs, options, worker) {
+  const queue = new Queue(refOrRefs, options, worker);
+  queues.push(queue);
+  queue.start();
 };
 
 function duration(value) {
@@ -513,8 +532,10 @@ let pingIntervalHandle, pingCallback;
  * All durations can be specified as either a human-readable string, or a number of milliseconds.
  *
  * @param {Function(Object) | null} callback The callback to invoke with a report each time we ping
- *        all the queues.  The report looks like: {healthy: true, maxLatency: 1234}.  If not
- *        specified, reports are silently dropped.
+ *        all the queues.  The report looks like:
+ *        {healthy: true, maxLatency: 1234, sickQueues: [], sickSources: []}.  sickQueues contains
+ *        logical queue keys, while sickSources contains the full URLs of unhealthy physical
+ *        sources.  If not specified, reports are silently dropped.
  * @param {number | string} interval The interval at which to ping queues, to both check the
  *        current response latency and make sure no tasks are stuck.  Defaults to 1 minute.
  */
@@ -535,9 +556,9 @@ module.exports.pingQueues = function(callback, interval) {
 function checkPings() {
   if (pinging) return Promise.resolve();
   pinging = true;
-  return Promise.all(_.map(queues, queue => {
+  return Promise.all(_.map(queues, queue => Promise.all(_.map(queue.sources, source => {
     const start = Date.now();
-    const pingRef = queue.ref.child(PING_KEY);
+    const pingRef = source.ref.child(PING_KEY);
     let pingFree;
     return pingRef.transaction(item => {
       pingFree = !item;
@@ -546,13 +567,21 @@ function checkPings() {
       if (!pingFree) return null;  // another process is currently pinging
       return waitUntilDeleted(pingRef, queue.options.healthyPingLatency + ms('10s')).then(() => {
         const latency = Date.now() - start;
-        return {
-          queue, latency, healthy: latency < queue.options.healthyPingLatency,
-          leaseDelay: queue.leaseDelay, tasksAcquired: queue.tasksAcquired
-        };
-      }, () => null);
+        return {source, latency, healthy: latency < queue.options.healthyPingLatency};
+      }, () => ({source, latency: Date.now() - start, healthy: false}));
     });
-  })).then(results => {
+  })).then(sourceResults => {
+    sourceResults = _.compact(sourceResults);
+    if (!sourceResults.length) return null;
+    return {
+      queue,
+      latency: _.max(_.map(sourceResults, 'latency')),
+      healthy: _.every(sourceResults, 'healthy'),
+      sickSources: _(sourceResults).reject('healthy').map('source').value(),
+      leaseDelay: queue.leaseDelay,
+      tasksAcquired: queue.tasksAcquired
+    };
+  }))).then(results => {
     results = _.compact(results);
     if (results.length) {
       // Backup scan in case tasks are stuck on a queue due to bugs.
@@ -560,6 +589,11 @@ function checkPings() {
       if (pingCallback) {
         const sickQueueKeys =
           _(results).reject('healthy').map(item => item.queue.ref.key).value();
+        const sickSourceUrls = _(results)
+          .flatMap(result => result.sickSources)
+          .map(source => source.ref.toString())
+          .uniq()
+          .value();
         const delays = _(results).map('leaseDelay').sortBy().value();
         const delaysMedian = delays.length % 2 ?
           delays[Math.floor(delays.length / 2)] :
@@ -568,6 +602,7 @@ function checkPings() {
         pingCallback({
           healthy: _.every(results, 'healthy'),
           sickQueues: sickQueueKeys,
+          sickSources: sickSourceUrls,
           stuckTasks: blacklistedTaskKeys.size,
           maxLatency: _.max(_.map(results, 'latency')),
           tasksAcquired: _.reduce(results, (sum, result) => sum + result.tasksAcquired, 0),
@@ -666,7 +701,7 @@ module.exports.blacklist = function(taskKey) {
   if (blacklistedTaskKeys.has(taskKey)) return false;
   blacklistedTaskKeys.add(taskKey);
   const task = tasks[taskKey];
-  if (task) task.queue.removeTask(taskKey);
+  if (task) task.source.removeTask(taskKey);
   return true;
 };
 

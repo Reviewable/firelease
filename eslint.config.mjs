@@ -4,7 +4,7 @@ import reviewableConfigBaseline from 'reviewable-configs/eslint-config/baseline.
 export default [
   ...reviewableConfigBaseline,
   {
-    files: ['*.js'],
+    files: ['*.js', 'tests/*.js'],
     languageOptions: {
       globals: {
         ...globals.node,
