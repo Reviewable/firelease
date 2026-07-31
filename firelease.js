@@ -364,9 +364,9 @@ class Queue {
       worker = options;
       options = {};
     }
-    const refs = _.isArray(refOrRefs) ? refOrRefs : [refOrRefs];
+    const refs = _(refOrRefs).castArray().uniqBy(item => item.toString()).value();
     if (!refs.length) throw new Error('At least one queue ref is required');
-    this.refs = _.uniqBy(refs, item => item.toString());
+    this.refs = refs;
     this.ref = this.refs[0];
     this.options = _.defaults({}, options, module.exports.defaults);
     this.options.minLease = duration(this.options.minLease);

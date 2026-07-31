@@ -180,6 +180,11 @@ function waitFor(predicate, timeout = 2000) {
 
 
 async function run() {
+  assert.throws(
+    () => {firelease.attachWorker([], () => {/* Do nothing. */});},
+    /At least one queue ref is required/
+  );
+
   const firstSource = new FakeQueueRef('first-database', 'queues/jobs');
   const secondSource = new FakeQueueRef('second-database', 'other/jobs');
   const calls = [];
