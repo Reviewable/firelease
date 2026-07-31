@@ -25,7 +25,9 @@ than zero, to properly balance task distribution between the processes.
   in Firebase.  When multiple refs are supplied, their tasks form one logical queue: they use the
   same worker and share `maxConcurrent`, `leaseDelay`, and the other queue options.  The refs may
   point to different paths and databases.  Individual tasks will be children of these roots and
-  must be objects.  The `_lease` key is reserved for use by Firelease in each task.
+  must be objects.  Duplicate refs in the same array are ignored; as with the single-ref API, don't
+  attach separate logical queues to the same path in one process.  The `_lease` key is reserved for
+  use by Firelease in each task.
 
 * `@param {Object} options` Optional options, supporting the following values:
   * `maxConcurrent: {number}` max number of tasks to handle concurrently for this worker.
@@ -74,8 +76,10 @@ Sets up regular pinging of all queues.  Can be called either before or after wor
 and will always ping all queues.  Can be called more than once to change the parameters.
 
 * `@param {Function(Object) | null} callback` The callback to invoke with a report each time we ping
-  all the queues.  The report looks like: `{healthy: true, maxLatency: 1234}`.  If not
-  specified, reports are silently dropped.
+  all the queues.  The report looks like:
+  `{healthy: true, maxLatency: 1234, sickQueues: [], sickSources: []}`.  `sickQueues` contains
+  logical queue keys, while `sickSources` contains the full URLs of unhealthy physical sources.  If
+  not specified, reports are silently dropped.
 
 * `@param {number | string} interval` The interval at which to ping queues, to both check the
   current response latency and make sure no tasks are stuck.  Defaults to 1 minute.

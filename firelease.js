@@ -155,7 +155,7 @@ class Task {
     Object.defineProperty(item, '$ref', {value: this.ref});
     Object.defineProperty(item, '$leaseTimeRemaining', {get: () => {
       if (!(item._lease && item._lease.expiry)) return 0;
-      return Math.max(0, item._lease.expiry - this.queue.now);
+      return Math.max(0, item._lease.expiry - this.ref.now);
     }});
     this.phase = 'work';
     return this.queue.callWorker(item).finally(() => {
@@ -532,8 +532,10 @@ let pingIntervalHandle, pingCallback;
  * All durations can be specified as either a human-readable string, or a number of milliseconds.
  *
  * @param {Function(Object) | null} callback The callback to invoke with a report each time we ping
- *        all the queues.  The report looks like: {healthy: true, maxLatency: 1234}.  If not
- *        specified, reports are silently dropped.
+ *        all the queues.  The report looks like:
+ *        {healthy: true, maxLatency: 1234, sickQueues: [], sickSources: []}.  sickQueues contains
+ *        logical queue keys, while sickSources contains the full URLs of unhealthy physical
+ *        sources.  If not specified, reports are silently dropped.
  * @param {number | string} interval The interval at which to ping queues, to both check the
  *        current response latency and make sure no tasks are stuck.  Defaults to 1 minute.
  */
@@ -565,8 +567,8 @@ function checkPings() {
       if (!pingFree) return null;  // another process is currently pinging
       return waitUntilDeleted(pingRef, queue.options.healthyPingLatency + ms('10s')).then(() => {
         const latency = Date.now() - start;
-        return {latency, healthy: latency < queue.options.healthyPingLatency};
-      }, () => null);
+        return {source, latency, healthy: latency < queue.options.healthyPingLatency};
+      }, () => ({source, latency: Date.now() - start, healthy: false}));
     });
   })).then(sourceResults => {
     sourceResults = _.compact(sourceResults);
@@ -575,6 +577,7 @@ function checkPings() {
       queue,
       latency: _.max(_.map(sourceResults, 'latency')),
       healthy: _.every(sourceResults, 'healthy'),
+      sickSources: _(sourceResults).reject('healthy').map('source').value(),
       leaseDelay: queue.leaseDelay,
       tasksAcquired: queue.tasksAcquired
     };
@@ -586,6 +589,11 @@ function checkPings() {
       if (pingCallback) {
         const sickQueueKeys =
           _(results).reject('healthy').map(item => item.queue.ref.key).value();
+        const sickSourceUrls = _(results)
+          .flatMap(result => result.sickSources)
+          .map(source => source.ref.toString())
+          .uniq()
+          .value();
         const delays = _(results).map('leaseDelay').sortBy().value();
         const delaysMedian = delays.length % 2 ?
           delays[Math.floor(delays.length / 2)] :
@@ -594,6 +602,7 @@ function checkPings() {
         pingCallback({
           healthy: _.every(results, 'healthy'),
           sickQueues: sickQueueKeys,
+          sickSources: sickSourceUrls,
           stuckTasks: blacklistedTaskKeys.size,
           maxLatency: _.max(_.map(results, 'latency')),
           tasksAcquired: _.reduce(results, (sum, result) => sum + result.tasksAcquired, 0),
@@ -692,7 +701,7 @@ module.exports.blacklist = function(taskKey) {
   if (blacklistedTaskKeys.has(taskKey)) return false;
   blacklistedTaskKeys.add(taskKey);
   const task = tasks[taskKey];
-  if (task) task.queue.removeTask(taskKey);
+  if (task) task.source.removeTask(taskKey);
   return true;
 };
 
