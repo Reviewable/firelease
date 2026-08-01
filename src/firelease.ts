@@ -689,7 +689,7 @@ function pingQueues(
   callback?: ((report: PingReport) => void) | null,
   interval?: Duration
 ): void {
-  const normalizedInterval = duration(interval ?? PING_INTERVAL);
+  const normalizedInterval = (interval && duration(interval)) || PING_INTERVAL;
   pingIntervalHandle?.clear();
   pingCallback = callback;
   pingIntervalHandle = timers.setInterval(() => {

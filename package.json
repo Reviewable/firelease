@@ -12,11 +12,11 @@
     "update": "yarn up -R '*' && yarn dedupe --strategy highest",
     "latest": "yarn npm-check-updates -i -m --packageManager yarn --install never && yarn install",
     "upgrade": "reviewable-upgrade",
-    "lint": "eslint src/*.ts tests/*.ts",
+    "lint": "eslint src/*.ts tests/*.js tests/*.ts",
     "check-types": "tsc --noEmit --skipLibCheck && tsc --project tests/tsconfig.json --skipLibCheck",
     "build": "tsc",
     "test": "yarn build && node tests/multiple_sources.test.js",
-    "prepublish": "tsc"
+    "prepack": "tsc"
   },
   "repository": "https://github.com/Reviewable/firelease",
   "keywords": [
@@ -46,6 +46,7 @@
     "@types/node": "^24.10.0",
     "@types/safe-timers": "^1.1.0",
     "eslint": "^10.7.0",
+    "globals": "17.7.0",
     "npm-check-updates": "^22.2.9",
     "reviewable-configs": "Reviewable/reviewable-configs#master",
     "typescript": "^5.4.0"

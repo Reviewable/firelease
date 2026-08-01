@@ -1959,6 +1959,7 @@ __metadata:
     "@types/node": "npm:^24.10.0"
     "@types/safe-timers": "npm:^1.1.0"
     eslint: "npm:^10.7.0"
+    globals: "npm:17.7.0"
     lodash: "npm:4.x"
     ms: "npm:2.x"
     nodefire: "npm:4.x || 5.x || 6.x"
@@ -2222,6 +2223,13 @@ __metadata:
   bin:
     glob: dist/esm/bin.mjs
   checksum: 10c0/100705eddbde6323e7b35e1d1ac28bcb58322095bd8e63a7d0bef1a2cdafe0d0f7922a981b2b48369a4f8c1b077be5c171804534c3509dfe950dde15fbe6d828
+  languageName: node
+  linkType: hard
+
+"globals@npm:17.7.0":
+  version: 17.7.0
+  resolution: "globals@npm:17.7.0"
+  checksum: 10c0/e83f791acf537b85fa1632ac48a45432a1999a61acd9f955b5c2145f66d6b5000a7945029874b6184fa2dfac8d33af03885a5a7ffa457866f1bcf0b40d0c1291
   languageName: node
   linkType: hard
 
