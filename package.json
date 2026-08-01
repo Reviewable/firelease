@@ -12,10 +12,10 @@
     "update": "yarn up -R '*' && yarn dedupe --strategy highest",
     "latest": "yarn npm-check-updates -i -m --packageManager yarn --install never && yarn install",
     "upgrade": "reviewable-upgrade",
-    "lint": "eslint src/*.ts tests/*.js tests/*.ts",
+    "lint": "eslint src/*.ts tests/*.ts",
     "check-types": "tsc --noEmit --skipLibCheck && tsc --project tests/tsconfig.json --skipLibCheck",
     "build": "tsc",
-    "test": "yarn build && node tests/multiple_sources.test.js",
+    "test": "node --import=tsx tests/multiple_sources.test.ts",
     "prepack": "tsc"
   },
   "repository": "https://github.com/Reviewable/firelease",
@@ -32,7 +32,7 @@
   },
   "homepage": "https://github.com/pkaminski/firelease",
   "engines": {
-    "node": ">=10.0"
+    "node": ">=24"
   },
   "dependencies": {
     "lodash": "4.x",
@@ -46,9 +46,9 @@
     "@types/node": "^24.10.0",
     "@types/safe-timers": "^1.1.0",
     "eslint": "^10.7.0",
-    "globals": "17.7.0",
     "npm-check-updates": "^22.2.9",
     "reviewable-configs": "Reviewable/reviewable-configs#master",
+    "tsx": "^4.23.1",
     "typescript": "^5.4.0"
   }
 }
