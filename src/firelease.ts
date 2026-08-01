@@ -56,8 +56,6 @@ interface QueueOptions {
   bufferSize?: number;
   minLease?: Duration;
   maxLease?: Duration;
-  leaseDelay?: Duration;
-  maxLeaseDelay?: Duration;
   healthyPingLatency?: Duration;
   preprocess?: (item: LeaseItem) => LeaseItem;
 }
@@ -67,8 +65,6 @@ interface NormalizedQueueOptions {
   bufferSize: number;
   minLease: number;
   maxLease: number;
-  minLeaseDelay: number;
-  maxLeaseDelay: number;
   healthyPingLatency: number;
   preprocess?: (item: LeaseItem) => LeaseItem;
 }
@@ -80,7 +76,6 @@ interface PingReport {
   stuckTasks: number;
   maxLatency: number;
   tasksAcquired: number;
-  leaseDelays: {min: number, max: number, median: number};
 }
 
 interface SourcePingResult {
@@ -94,7 +89,6 @@ interface QueuePingResult {
   latency: number;
   healthy: boolean;
   sickSources: QueueSource[];
-  leaseDelay: number;
   tasksAcquired: number;
 }
 
@@ -136,8 +130,8 @@ const RETRY = {} as RetryDirective;
 
 /** Default option values for all subsequent attachWorker calls. */
 const defaults: QueueOptions = {
-  maxConcurrent: Number.MAX_VALUE, bufferSize: 5, minLease: '30s', maxLease: '1h', leaseDelay: 0,
-  maxLeaseDelay: 0, healthyPingLatency: '1.5s'
+  maxConcurrent: Number.MAX_VALUE, bufferSize: 5, minLease: '30s', maxLease: '1h',
+  healthyPingLatency: '1.5s'
 };
 
 const scanAll = _.debounce(() => {
@@ -202,7 +196,7 @@ class Task {
   prepare() {
     if (tasks[this.key] !== this || this.removed || this.working) return false;
     const now = this.ref.now;
-    const busy = this.expiry + this.queue.leaseDelay > now;
+    const busy = this.expiry > now;
     // console.log('prepare', this.ref.key, 'expiry', this.expiry, 'now', now);
     if (!busy) {
       // Locally reserve for min lease duration to prevent concurrent transaction attempts.  Expiry
@@ -210,8 +204,7 @@ class Task {
       this.expiry = now + this.queue.constrainLeaseDuration(0);
     }
     this.timeout?.clear();
-    this.timeout = timers.setTimeout(
-      this.queue.process.bind(this.queue, this), this.expiry + this.queue.leaseDelay - now);
+    this.timeout = timers.setTimeout(this.queue.process.bind(this.queue, this), this.expiry - now);
     return !busy;
   }
 
@@ -231,8 +224,7 @@ class Task {
       startTimestamp = this.ref.now;
       // console.log('txn  ', this.ref.key, 'lease', item._lease, 'now', startTimestamp);
       // Check if another process beat us to it.
-      if (item._lease?.expiry &&
-          item._lease.expiry + this.queue.leaseDelay > startTimestamp) {
+      if (item._lease?.expiry && item._lease.expiry > startTimestamp) {
         return item;
       }
       acquired = true;
@@ -247,11 +239,10 @@ class Task {
       Promise<LeaseItem | null | undefined> & {transaction?: unknown};
     try {
       const item = await transactionPromise;
-      if (!acquired) this.queue.countTaskAcquired(false);
       if (acquired && item !== null && this.ref.key !== PING_KEY) {
         if (!_.isObject(item)) throw new Error(`item not an object: ${item}`);
         Object.defineProperty(item, '$leaseTransaction', {value: transactionPromise.transaction});
-        this.queue.countTaskAcquired(true);
+        this.queue.tasksAcquired++;
         await this.run(item as WorkerItem, startTimestamp);
       }
     } catch (error) {
@@ -506,7 +497,6 @@ class Queue {
   refs: NodeFire[];
   ref: NodeFire;
   options: NormalizedQueueOptions;
-  leaseDelay: number;
   numConcurrent = 0;
   tasksAcquired = 0;
   worker: Worker;
@@ -521,14 +511,10 @@ class Queue {
     if (!refs.length) throw new Error('At least one queue ref is required');
     this.refs = refs;
     this.ref = this.refs[0];
-    const filledOptions = _.defaults({}, options, firelease.defaults) as
-      Required<QueueOptions> & {minLeaseDelay?: number};
+    const filledOptions = _.defaults({}, options, firelease.defaults) as Required<QueueOptions>;
     filledOptions.minLease = duration(filledOptions.minLease);
     filledOptions.maxLease = duration(filledOptions.maxLease);
-    filledOptions.minLeaseDelay = this.leaseDelay = duration(filledOptions.leaseDelay);
-    delete (filledOptions as QueueOptions).leaseDelay;
     filledOptions.healthyPingLatency = duration(filledOptions.healthyPingLatency);
-    filledOptions.maxLeaseDelay = duration(filledOptions.maxLeaseDelay);
     this.options = filledOptions as NormalizedQueueOptions;
     this.worker = worker as Worker;
     this.sources = _.map(this.refs, sourceRef => new QueueSource(this, sourceRef));
@@ -554,14 +540,6 @@ class Queue {
 
   constrainLeaseDuration(time: number) {
     return Math.min(this.options.maxLease, Math.max(time, this.options.minLease));
-  }
-
-  countTaskAcquired(acquired: boolean) {
-    if (this.options.maxLeaseDelay) {
-      this.leaseDelay = Math.max(this.options.minLeaseDelay, Math.min(
-        this.options.maxLeaseDelay, this.leaseDelay + (acquired ? 1 : -2)));
-    }
-    if (acquired) this.tasksAcquired++;
   }
 
   async process(task: Task) {
@@ -603,8 +581,7 @@ class Queue {
 /**
  * Attaches a worker function to consume tasks from a queue.  You should normally attach no more
  * than one worker per path in any given process, but it's OK to run multiple processes on the same
- * paths concurrently.  If you do, you probably want to set `maxLeaseDelay` to something greater
- * than zero, to properly balance task distribution between the processes.
+ * paths concurrently.
  *
  * All durations can be specified as either a human-readable string, or a number of milliseconds.
  *
@@ -622,13 +599,6 @@ class Queue {
  *          expected time a worker will take to handle a task.
  *        maxLease: {number | string} maximum duration of each lease; the lease duration is doubled
  *          each time a task fails until it reaches maxLease.
- *        leaseDelay: {number | string} duration by which to delay leasing an item after it becomes
- *          available; useful for setting up "backup" servers that only grab tasks that aren't taken
- *          up fast enough by the primary.
- *        maxLeaseDelay: {number | string} if non-zero, enables automatic leaseDelay adjustment and
- *          sets the maximum duration to wait before attempting to acquire a ready task.  This is
- *          often necessary to compensate for differences in machine or network speed, or for
- *          Firebase's consistent order for sending event notifications to multiple clients.
  *        preprocess: {function(Object):Object} a function to use to preprocess each item during the
  *          leasing transaction.  This function must be fast, synchronous, idempotent, and
  *          should return the modified item (passed as the sole argument, OK to mutate).  One use
@@ -724,19 +694,13 @@ async function checkPings() {
         .map(source => source.ref.toString())
         .uniq()
         .value();
-      const delays = _(availableResults).map('leaseDelay').sortBy().value();
-      const delaysMedian = delays.length % 2 ?
-        delays[Math.floor(delays.length / 2)] :
-        ((delays[Math.floor(delays.length / 2)] +
-          delays[Math.ceil(delays.length / 2)]) / 2);
       pingCallback({
         healthy: _.every(availableResults, 'healthy'),
         sickQueues: sickQueueKeys,
         sickSources: sickSourceUrls,
         stuckTasks: blacklistedTaskKeys.size,
         maxLatency: _.max(_.map(availableResults, 'latency'))!,
-        tasksAcquired: _.reduce(availableResults, (sum, result) => sum + result.tasksAcquired, 0),
-        leaseDelays: {min: _.min(delays)!, max: _.max(delays)!, median: delaysMedian}
+        tasksAcquired: _.reduce(availableResults, (sum, result) => sum + result.tasksAcquired, 0)
       });
     }
   }
@@ -753,7 +717,6 @@ async function checkQueuePings(queue: Queue) {
     latency: _.max(_.map(availableResults, 'latency'))!,
     healthy: _.every(availableResults, 'healthy'),
     sickSources: _(availableResults).reject('healthy').map('source').value(),
-    leaseDelay: queue.leaseDelay,
     tasksAcquired: queue.tasksAcquired
   } as QueuePingResult;
 }

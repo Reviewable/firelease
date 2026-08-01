@@ -16,16 +16,15 @@ The module exposes these functions:
 
 Attaches a worker function to consume tasks from a queue.  You should normally attach no more
 than one worker per path in any given process, but it's OK to run multiple processes on the same
-paths concurrently.  If you do, you probably want to set `maxLeaseDelay` to something greater
-than zero, to properly balance task distribution between the processes.
+paths concurrently.
 
 * `@param {Nodefire | Nodefire[]} refOrRefs` A Nodefire ref, or an array of refs, to the queue roots
   in Firebase.  When multiple refs are supplied, their tasks form one logical queue: they use the
-  same worker and share `maxConcurrent`, `leaseDelay`, and the other queue options.  The refs may
-  point to different paths and databases.  Individual tasks will be children of these roots and
-  must be objects.  Duplicate refs in the same array are ignored; as with the single-ref API, don't
-  attach separate logical queues to the same path in one process.  The `_lease` key is reserved for
-  use by Firelease in each task.
+  same worker and share `maxConcurrent` and the other queue options.  The refs may point to
+  different paths and databases.  Individual tasks will be children of these roots and must be
+  objects.  Duplicate refs in the same array are ignored; as with the single-ref API, don't attach
+  separate logical queues to the same path in one process.  The `_lease` key is reserved for use by
+  Firelease in each task.
 
 * `@param {Object} options` Optional options, supporting the following values:
   * `maxConcurrent: {number}` max number of tasks to handle concurrently for this worker.
@@ -37,13 +36,6 @@ than zero, to properly balance task distribution between the processes.
     expected time a worker will take to handle a task.
   * `maxLease: {number | string}` maximum duration of each lease; the lease duration is doubled each
     time a task fails until it reaches `maxLease`.
-  * `leaseDelay: {number | string}` duration by which to delay leasing an item after it becomes
-    available; useful for setting up "backup" servers that only grab tasks that aren't taken up fast
-    enough by the primary.
-  * `maxLeaseDelay: {number | string}` if non-zero, enables automatic `leaseDelay` adjustment and
-    sets the maximum duration to wait before attempting to acquire a ready task.  This is often
-    necessary to compensate for differences in machine or network speed, or for Firebase's
-    consistent order for sending event notifications to multiple clients.
   * `preprocess: {function(Object):Object}` a function to use to preprocess each item during the
     leasing transaction.  This function must be fast, synchronous, idempotent, and should return the
     modified item (passed as the sole argument, OK to mutate).  One use for preprocessing is to

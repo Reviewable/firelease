@@ -26,6 +26,19 @@ firelease.attachWorker(
   async item => {await firelease.extendLease(item, '1m');}
 );
 
+// @ts-expect-error Lease delays are no longer supported.
+firelease.attachWorker(queueRef, {leaseDelay: '1s'}, () => undefined);
+
+// @ts-expect-error Adaptive lease delays are no longer supported.
+firelease.attachWorker(queueRef, {maxLeaseDelay: '1s'}, () => undefined);
+
+firelease.pingQueues(report => {
+  const tasksAcquired: number = report.tasksAcquired;
+  // @ts-expect-error Lease-delay telemetry was removed with the delay mechanism.
+  void report.leaseDelays;
+  void tasksAcquired;
+});
+
 firelease.globalMaxConcurrent = 10;
 firelease.captureError = error => {void error.firelease;};
 const shutdownPromise: Promise<void> = firelease.shutdown();
