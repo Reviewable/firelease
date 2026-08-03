@@ -3,14 +3,12 @@ Firelease
 
 [![Project Status: Active - The project has reached a stable, usable state and is being actively developed.](http://www.repostatus.org/badges/latest/active.svg)](http://www.repostatus.org/#active)
 
-A Firebase queue consumer for Node with at-least-once and at-most-once semantics, fine-grained concurrency controls, and support for promises and generators.  Built on top of [Nodefire](https://github.com/pkaminski/nodefire).
+A Firebase queue consumer for Node with at-least-once and at-most-once semantics, fine-grained concurrency controls, and support for promises.  Built on top of [Nodefire](https://github.com/pkaminski/nodefire).
 
 API
 ---
 
 All durations can be specified as either a human-readable string, or a number of milliseconds.
-
-To use generators, make sure to set `Promise.co` to a `co`-compatible function.
 
 The module exposes these functions:
 
@@ -18,16 +16,15 @@ The module exposes these functions:
 
 Attaches a worker function to consume tasks from a queue.  You should normally attach no more
 than one worker per path in any given process, but it's OK to run multiple processes on the same
-paths concurrently.  If you do, you probably want to set `maxLeaseDelay` to something greater
-than zero, to properly balance task distribution between the processes.
+paths concurrently.
 
 * `@param {Nodefire | Nodefire[]} refOrRefs` A Nodefire ref, or an array of refs, to the queue roots
   in Firebase.  When multiple refs are supplied, their tasks form one logical queue: they use the
-  same worker and share `maxConcurrent`, `leaseDelay`, and the other queue options.  The refs may
-  point to different paths and databases.  Individual tasks will be children of these roots and
-  must be objects.  Duplicate refs in the same array are ignored; as with the single-ref API, don't
-  attach separate logical queues to the same path in one process.  The `_lease` key is reserved for
-  use by Firelease in each task.
+  same worker and share `maxConcurrent` and the other queue options.  The refs may point to
+  different paths and databases.  Individual tasks will be children of these roots and must be
+  objects.  Duplicate refs in the same array are ignored; as with the single-ref API, don't attach
+  separate logical queues to the same path in one process.  The `_lease` key is reserved for use by
+  Firelease in each task.
 
 * `@param {Object} options` Optional options, supporting the following values:
   * `maxConcurrent: {number}` max number of tasks to handle concurrently for this worker.
@@ -39,13 +36,6 @@ than zero, to properly balance task distribution between the processes.
     expected time a worker will take to handle a task.
   * `maxLease: {number | string}` maximum duration of each lease; the lease duration is doubled each
     time a task fails until it reaches `maxLease`.
-  * `leaseDelay: {number | string}` duration by which to delay leasing an item after it becomes
-    available; useful for setting up "backup" servers that only grab tasks that aren't taken up fast
-    enough by the primary.
-  * `maxLeaseDelay: {number | string}` if non-zero, enables automatic `leaseDelay` adjustment and
-    sets the maximum duration to wait before attempting to acquire a ready task.  This is often
-    necessary to compensate for differences in machine or network speed, or for Firebase's
-    consistent order for sending event notifications to multiple clients.
   * `preprocess: {function(Object):Object}` a function to use to preprocess each item during the
     leasing transaction.  This function must be fast, synchronous, idempotent, and should return the
     modified item (passed as the sole argument, OK to mutate).  One use for preprocessing is to
@@ -66,8 +56,7 @@ than zero, to properly balance task distribution between the processes.
   * An epoch in milliseconds greater than 1000000000000 at which the task should be tried.
   * A function that takes the task as argument and returns one of the values above.  This function
     will be executed in a transaction to ensure atomicity.
-  All of these values can also be wrapped in a promise or a generator, which will be dealt with
-  appropriately.
+  All of these values can also be wrapped in a promise.
 
 
 ```function pingQueues(callback, interval)```
@@ -116,16 +105,16 @@ Shuts down firelease by refusing to take new tasks, and returns a promise that r
 
 Returns an array of the URLs of all tasks that are currently being worked on.
 
-There are also some module-level settings you can change:
+The module also exports a mutable `settings` object:
 
-```globalMaxConcurrent: {number}```
+```settings.globalMaxConcurrent: {number}```
 
 Set this to the maximum number of concurrent tasks being executed at any moment across all queues.
 
-```defaults: {Object}```
-
-Default option values for all subsequent attachWorker calls.  See that function for details.
-
-```captureError: {function(Error)}```
+```settings.captureError: {function(Error)}```
 
 A function used to capture errors.  Defaults to logging the stack to the console, but you may want to change it to something else in production.  The function should take a single exception argument.
+
+```defaults: {Object}```
+
+Mutable default option values for all subsequent attachWorker calls.  See that function for details.

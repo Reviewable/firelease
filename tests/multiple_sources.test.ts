@@ -1,13 +1,22 @@
-'use strict';
+import assert from 'node:assert';
+import type NodeFire from 'nodefire';
 
-const assert = require('assert');
-const firelease = require('..');
+import firelease from '../src';
+
+interface FakeLease {
+  [key: string]: unknown;
+}
+
+interface FakeTaskValue {
+  _lease?: FakeLease;
+  [key: string]: unknown;
+}
+
+type Listener = {callback: (snapshot: FakeSnapshot) => void, context?: unknown};
 
 
 class FakeSnapshot {
-  constructor(ref) {
-    this.ref = ref;
-  }
+  constructor(readonly ref: FakeTaskRef) {}
 
   val() {
     return clone(this.ref.value);
@@ -16,8 +25,9 @@ class FakeSnapshot {
 
 
 class FakeDatabaseRoot {
-  constructor(name) {
-    this.name = name;
+  readonly database;
+
+  constructor(readonly name: string) {
     this.database = {
       app: {name},
       goOffline() {/* Do nothing. */},
@@ -25,28 +35,31 @@ class FakeDatabaseRoot {
     };
   }
 
-  child(path) {
+  child(path: string) {
     assert.strictEqual(path, '.info/connected');
     return {
-      on: (event, callback, cancelCallback, context) => {
+      on: (
+        event: string,
+        callback: (snapshot: {val(): boolean}) => void,
+        cancelCallback?: (error: Error) => void,
+        context?: unknown
+      ) => {
         assert.strictEqual(event, 'value');
         callback.call(context, {val: () => true});
       }
     };
   }
 
-  isEqual(other) {
+  isEqual(other: unknown) {
     return other === this;
   }
 }
 
 
 class FakeTaskRef {
-  constructor(queueRef, key) {
-    this.queueRef = queueRef;
-    this.key = key;
-    this.value = null;
-  }
+  value: FakeTaskValue | null = null;
+
+  constructor(readonly queueRef: FakeQueueRef, readonly key: string) {}
 
   get root() {
     return this.queueRef.root;
@@ -64,7 +77,9 @@ class FakeTaskRef {
     return `${this.queueRef}/${this.key}`;
   }
 
-  transaction(update) {
+  transaction(
+    update: (value: FakeTaskValue | null) => FakeTaskValue | null | undefined
+  ) {
     const updated = update(clone(this.value));
     if (updated !== undefined) this.value = clone(updated);
     return Promise.resolve(clone(this.value));
@@ -80,9 +95,9 @@ class FakeTaskRef {
     return Promise.resolve();
   }
 
-  child(path) {
+  child(path: string) {
     return {
-      set: value => {
+      set: (value: unknown) => {
         if (path === '_lease/busy' && this.value && this.value._lease) {
           this.value._lease.busy = value;
         }
@@ -94,13 +109,16 @@ class FakeTaskRef {
 
 
 class FakeQueueRef {
-  constructor(databaseName, path) {
+  readonly databaseRoot: FakeDatabaseRoot;
+  readonly database;
+  readonly key: string;
+  readonly listeners: Record<string, Listener[]> = {};
+  readonly tasks: Record<string, FakeTaskRef> = {};
+
+  constructor(databaseName: string, readonly path: string) {
     this.databaseRoot = new FakeDatabaseRoot(databaseName);
     this.database = this.databaseRoot.database;
-    this.path = path;
-    this.key = path.split('/').pop();
-    this.listeners = {};
-    this.tasks = {};
+    this.key = path.split('/').pop()!;
   }
 
   get root() {
@@ -115,7 +133,7 @@ class FakeQueueRef {
     return `https://${this.databaseRoot.name}.example.test/${this.path}`;
   }
 
-  orderByChild(path) {
+  orderByChild(path: string) {
     assert.strictEqual(path, '_lease/expiry');
     return this;
   }
@@ -128,43 +146,48 @@ class FakeQueueRef {
     return Promise.resolve(null);
   }
 
-  child(key) {
+  child(key: string) {
     if (!this.tasks[key]) this.tasks[key] = new FakeTaskRef(this, key);
     return this.tasks[key];
   }
 
-  on(event, callback, cancelCallback, context) {
-    this.listeners[event] = this.listeners[event] || [];
+  on(
+    event: string,
+    callback: Listener['callback'],
+    cancelCallback?: (error: Error) => void,
+    context?: unknown
+  ) {
+    this.listeners[event] ??= [];
     this.listeners[event].push({callback, context});
   }
 
-  off(event, callback, context) {
-    this.listeners[event] = (this.listeners[event] || []).filter(
+  off(event: string, callback: Listener['callback'], context?: unknown) {
+    this.listeners[event] = (this.listeners[event] ?? []).filter(
       listener => listener.callback !== callback || listener.context !== context);
   }
 
-  addTask(key, value) {
+  addTask(key: string, value: FakeTaskValue) {
     const ref = this.child(key);
     ref.value = clone(value);
     this.emit('child_added', new FakeSnapshot(ref));
     return ref;
   }
 
-  emit(event, snapshot) {
-    for (const listener of this.listeners[event] || []) {
+  emit(event: string, snapshot: FakeSnapshot) {
+    for (const listener of this.listeners[event] ?? []) {
       listener.callback.call(listener.context, snapshot);
     }
   }
 }
 
 
-function clone(value) {
+function clone<T>(value: T): T {
   return value === null || value === undefined ? value : JSON.parse(JSON.stringify(value));
 }
 
-function waitFor(predicate, timeout = 2000) {
+function waitFor(predicate: () => unknown, timeout = 2000) {
   const start = Date.now();
-  return new Promise((resolve, reject) => {
+  return new Promise<void>((resolve, reject) => {
     function check() {
       if (predicate()) {
         resolve();
@@ -187,23 +210,25 @@ async function run() {
 
   const firstSource = new FakeQueueRef('first-database', 'queues/jobs');
   const secondSource = new FakeQueueRef('second-database', 'other/jobs');
-  const calls = [];
-  const leaseTimesRemaining = [];
+  const calls: string[] = [];
+  const leaseTimesRemaining: number[] = [];
   let active = 0;
   let maxActive = 0;
-  let releaseFirst;
-  const firstBlocked = new Promise(resolve => {releaseFirst = resolve;});
+  let releaseFirst!: () => void;
+  const firstBlocked = new Promise<void>(resolve => {releaseFirst = resolve;});
 
   firelease.attachWorker(
-    [firstSource, secondSource],
+    [asNodeFire(firstSource), asNodeFire(secondSource)],
     {bufferSize: Infinity, maxConcurrent: 1, minLease: '1s'},
-    item => {
+    async item => {
       active++;
       maxActive = Math.max(maxActive, active);
       calls.push(item.$ref.toString());
       leaseTimesRemaining.push(item.$leaseTimeRemaining);
       if (calls.length === 1) {
-        return firstBlocked.then(() => {active--;});
+        await firstBlocked;
+        active--;
+        return;
       }
       active--;
     }
@@ -230,28 +255,51 @@ async function run() {
   assert.deepStrictEqual(firelease.listTasksInProgress(), []);
 
   const legacySource = new FakeQueueRef('legacy-database', 'queues/legacy');
-  let legacyTaskUrl;
-  firelease.attachWorker(legacySource, item => {
+  let legacyTaskUrl: string | undefined;
+  firelease.attachWorker(asNodeFire(legacySource), item => {
     legacyTaskUrl = item.$ref.toString();
     assert(Number.isFinite(item.$leaseTimeRemaining));
   });
   const legacyTask = legacySource.addTask('task', {payload: 3});
-  await waitFor(() => legacyTaskUrl && !legacyTask.value);
+  await waitFor(() => legacyTaskUrl !== undefined && !legacyTask.value);
   assert.strictEqual(legacyTaskUrl, legacyTask.toString());
 
   const duplicateSource = new FakeQueueRef('duplicate-database', 'queues/duplicate');
-  let duplicateTaskUrl;
-  firelease.attachWorker([duplicateSource, duplicateSource], {bufferSize: Infinity}, item => {
-    duplicateTaskUrl = item.$ref.toString();
-  });
+  let duplicateTaskUrl: string | undefined;
+  firelease.attachWorker(
+    [asNodeFire(duplicateSource), asNodeFire(duplicateSource)],
+    {bufferSize: Infinity},
+    item => {
+      duplicateTaskUrl = item.$ref.toString();
+    }
+  );
   assert.strictEqual(duplicateSource.listeners.child_added.length, 1);
   const duplicateTask = duplicateSource.addTask('task', {payload: 4});
-  await waitFor(() => duplicateTaskUrl && !duplicateTask.value);
+  await waitFor(() => duplicateTaskUrl !== undefined && !duplicateTask.value);
   assert.strictEqual(duplicateTaskUrl, duplicateTask.toString());
+
+  const extensionSource = new FakeQueueRef('extension-database', 'queues/extension');
+  let extensionComplete = false;
+  firelease.attachWorker(asNodeFire(extensionSource), {minLease: '1s'}, async item => {
+    const initialExpiry = item._lease.expiry;
+    const firstExtension = firelease.extendLease(item, '2s');
+    const secondExtension = firelease.extendLease(item, '3s');
+    assert.strictEqual(firstExtension, secondExtension);
+    await firstExtension;
+    assert(item._lease.expiry >= initialExpiry + 5000);
+    extensionComplete = true;
+  });
+  const extensionTask = extensionSource.addTask('task', {payload: 5});
+  await waitFor(() => extensionComplete && !extensionTask.value);
 }
 
 
-run().catch(error => {
+function asNodeFire(ref: FakeQueueRef) {
+  return ref as unknown as NodeFire;
+}
+
+
+void run().catch(error => {
   console.error(error);
   process.exitCode = 1;
 });

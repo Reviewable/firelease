@@ -1,0 +1,10 @@
+{
+    "extends": "reviewable-configs/tsconfig.json",
+    "compilerOptions": {
+        "declaration": true,
+        "outDir": "./built",
+        "rootDir": "./src/",
+        "types": ["node"]
+    },
+    "exclude": ["./built", "./tests", "eslint.config.mjs"]
+}
