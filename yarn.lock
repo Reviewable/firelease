@@ -2269,7 +2269,7 @@ __metadata:
     eslint: "npm:^10.7.0"
     lodash: "npm:4.x"
     ms: "npm:2.x"
-    nodefire: "npm:4.x || 5.x || 6.x"
+    nodefire: "npm:7.x"
     npm-check-updates: "npm:^22.2.9"
     reviewable-configs: "Reviewable/reviewable-configs#master"
     safe-timers: "npm:^1.1.0"
@@ -3529,9 +3529,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"nodefire@npm:4.x || 5.x || 6.x":
-  version: 6.1.0
-  resolution: "nodefire@npm:6.1.0"
+"nodefire@npm:7.x":
+  version: 7.0.2
+  resolution: "nodefire@npm:7.0.2"
   dependencies:
     firebase-admin: "npm:14.x"
     firebase-childrenkeys: "npm:^3.1.0"
@@ -3539,7 +3539,7 @@ __metadata:
     lodash: "npm:^4.17.21"
     lru-cache: "npm:11.x"
     safe-timers: "npm:^1.1.0"
-  checksum: 10c0/1b0e540ee3d5eec107e064411efbbcbfe54dcb431caaf99ea1dac7a0ddf03bed3a84fe54a40afbe9b85eb649a1b821ee5e1585adc277f6e6dff6119dc3e41ca3
+  checksum: 10c0/a628ab5c2b4bd13e59e2d3c3935ce627fe895e7c00d7f3383ea203aa4e7b9c0b8c98747d699dd974c4e535a76b12556ead260e4349f9db745d71d91f32e794d1
   languageName: node
   linkType: hard
 

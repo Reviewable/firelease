@@ -37,7 +37,7 @@
   "dependencies": {
     "lodash": "4.x",
     "ms": "2.x",
-    "nodefire": "4.x || 5.x || 6.x",
+    "nodefire": "7.x",
     "safe-timers": "^1.1.0"
   },
   "devDependencies": {

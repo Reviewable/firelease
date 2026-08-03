@@ -1,4 +1,8 @@
 import NodeFire from 'nodefire';
+import type {
+  Duration, FireleaseApi, FireleaseError, FireleaseErrorDetails, FireleaseErrorLevel, Lease,
+  LeaseItem, PingReport, QueueOptions, QueueRef, RetryDirective, Worker, WorkerItem, WorkerResult
+} from '../src';
 
 // Verify the package's CommonJS-facing TypeScript API.
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -6,6 +10,24 @@ import firelease = require('../src');
 
 declare const queueRef: NodeFire;
 declare const generatorWorker: () => Generator<unknown, void, unknown>;
+declare const lease: Lease;
+declare const leaseItem: LeaseItem;
+declare const workerItem: WorkerItem;
+declare const fireleaseError: FireleaseError;
+declare const pingReport: PingReport;
+declare const queueOptions: QueueOptions;
+declare const duration: Duration;
+declare const errorDetails: FireleaseErrorDetails;
+declare const errorLevel: FireleaseErrorLevel;
+declare const queue: QueueRef;
+declare const retry: RetryDirective;
+declare const worker: Worker;
+declare const workerResult: WorkerResult;
+declare const api: FireleaseApi;
+void [
+  lease, leaseItem, workerItem, fireleaseError, pingReport, queueOptions, duration, errorDetails,
+  errorLevel, queue, retry, worker, workerResult, api
+];
 
 // @ts-expect-error Generator workers are no longer supported.
 firelease.attachWorker(queueRef, generatorWorker);
@@ -13,10 +35,8 @@ firelease.attachWorker(queueRef, generatorWorker);
 firelease.attachWorker(queueRef, item => {
   const payload = item.payload;
   const leaseTimeRemaining: number = item.$leaseTimeRemaining;
-  const transaction: unknown = item.$leaseTransaction;
   void payload;
   void leaseTimeRemaining;
-  void transaction;
   return firelease.RETRY;
 });
 
