@@ -114,6 +114,7 @@ class FakeQueueRef {
   readonly key: string;
   readonly listeners: Record<string, Listener[]> = {};
   readonly tasks: Record<string, FakeTaskRef> = {};
+  fixedNow?: number;
 
   constructor(databaseName: string, readonly path: string) {
     this.databaseRoot = new FakeDatabaseRoot(databaseName);
@@ -126,7 +127,7 @@ class FakeQueueRef {
   }
 
   get now() {
-    return Date.now();
+    return this.fixedNow ?? Date.now();
   }
 
   toString() {
@@ -279,14 +280,16 @@ async function run() {
   assert.strictEqual(duplicateTaskUrl, duplicateTask.toString());
 
   const extensionSource = new FakeQueueRef('extension-database', 'queues/extension');
+  // Exercise the exact-boundary path where the first extension already satisfies the second.
+  extensionSource.fixedNow = Date.now();
   let extensionComplete = false;
   firelease.attachWorker(asNodeFire(extensionSource), {minLease: '1s'}, async item => {
-    const initialExpiry = item._lease.expiry;
     const firstExtension = firelease.extendLease(item, '2s');
+    const secondExtensionTimestamp = item.$ref.now;
     const secondExtension = firelease.extendLease(item, '3s');
     assert.strictEqual(firstExtension, secondExtension);
     await firstExtension;
-    assert(item._lease.expiry >= initialExpiry + 5000);
+    assert(item._lease.expiry >= secondExtensionTimestamp + 3000);
     extensionComplete = true;
   });
   const extensionTask = extensionSource.addTask('task', {payload: 5});
@@ -301,5 +304,5 @@ function asNodeFire(ref: FakeQueueRef) {
 
 void run().catch(error => {
   console.error(error);
-  process.exitCode = 1;
+  process.exit(1);
 });
