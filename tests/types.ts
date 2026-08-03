@@ -1,12 +1,13 @@
 import NodeFire from 'nodefire';
-import type {
-  Duration, FireleaseApi, FireleaseError, FireleaseErrorDetails, FireleaseErrorLevel, Lease,
-  LeaseItem, PingReport, QueueOptions, QueueRef, RetryDirective, Worker, WorkerItem, WorkerResult
+import firelease, {
+  RETRY, attachWorker, blacklist, captureError, defaults, extendLease, globalMaxConcurrent,
+  listTasksInProgress, pingQueues, shutdown, type Duration, type FireleaseApi,
+  type FireleaseError, type FireleaseErrorDetails, type FireleaseErrorLevel, type Lease,
+  type LeaseItem, type PingReport, type QueueOptions, type QueueRef, type RetryDirective,
+  type Worker, type WorkerItem, type WorkerResult
 } from '../src';
 
-// Verify the package's CommonJS-facing TypeScript API.
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-import firelease = require('../src');
+// Verify the package's default and named TypeScript exports.
 
 declare const queueRef: NodeFire;
 declare const generatorWorker: () => Generator<unknown, void, unknown>;
@@ -27,6 +28,14 @@ declare const api: FireleaseApi;
 void [
   lease, leaseItem, workerItem, fireleaseError, pingReport, queueOptions, duration, errorDetails,
   errorLevel, queue, retry, worker, workerResult, api
+];
+const namedGlobalMaxConcurrent: number = globalMaxConcurrent;
+const namedCaptureError: (error: FireleaseError) => void = captureError;
+const namedDefaults: QueueOptions = defaults;
+const namedRetry: RetryDirective = RETRY;
+void [
+  attachWorker, blacklist, extendLease, listTasksInProgress, pingQueues, shutdown,
+  namedGlobalMaxConcurrent, namedCaptureError, namedDefaults, namedRetry
 ];
 
 // @ts-expect-error Generator workers are no longer supported.

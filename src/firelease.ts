@@ -8,106 +8,86 @@ const PING_KEY = 'ping';
 
 declare const RETRY_DIRECTIVE: unique symbol;
 
-// TypeScript requires declaration merging to expose named types with a CommonJS `export =` value.
-/* eslint-disable @typescript-eslint/no-namespace */
-/* eslint-disable @typescript-eslint/no-shadow */
-declare namespace firelease {
-  type Duration = number | string;
+export type Duration = number | string;
 
-  interface Lease {
-    expiry?: number;
-    time?: number;
-    attempts?: number;
-    initial?: number;
-    busy?: boolean;
-    timeNeeded?: number;
-    extendLeasePromise?: Promise<void>;
-  }
-
-  interface LeaseItem {
-    _lease?: Lease;
-    [key: string]: any;
-  }
-
-  interface RetryDirective {
-    readonly [RETRY_DIRECTIVE]: true;
-  }
-
-  interface WorkerItem extends LeaseItem {
-    _lease: Lease & {expiry: number};
-    readonly $ref: NodeFire;
-    readonly $leaseTimeRemaining: number;
-  }
-
-  type FireleaseErrorLevel = 'fatal' | 'error' | 'warning' | 'log' | 'info' | 'debug';
-
-  interface FireleaseErrorDetails {
-    code?: string;
-    itemKey?: string;
-    phase?: string;
-    queue?: string;
-    timeNeeded?: Duration;
-  }
-
-  interface FireleaseError extends Error {
-    firelease?: FireleaseErrorDetails;
-    level?: FireleaseErrorLevel;
-  }
-
-  interface QueueOptions {
-    maxConcurrent?: number;
-    bufferSize?: number;
-    minLease?: Duration;
-    maxLease?: Duration;
-    healthyPingLatency?: Duration;
-    preprocess?: (item: LeaseItem) => LeaseItem;
-  }
-
-  interface PingReport {
-    healthy: boolean;
-    sickQueues: (string | null)[];
-    sickSources: string[];
-    stuckTasks: number;
-    maxLatency: number;
-    tasksAcquired: number;
-  }
-
-  type QueueRef = NodeFire | NodeFire[];
-  type WorkerResult = RetryDirective | Duration | Lease | null | void |
-    ((item: LeaseItem) => RetryDirective | Duration | Lease | null | void);
-  type Worker = (item: WorkerItem) => WorkerResult | PromiseLike<WorkerResult>;
-
-  interface FireleaseApi {
-    readonly RETRY: RetryDirective;
-    globalMaxConcurrent: number;
-    defaults: QueueOptions;
-    captureError: (error: FireleaseError) => void;
-    attachWorker: {
-      (refOrRefs: QueueRef, worker: Worker): void;
-      (refOrRefs: QueueRef, options: QueueOptions, worker: Worker): void;
-    };
-    pingQueues(callback?: ((report: PingReport) => void) | null, interval?: Duration): void;
-    extendLease(item: WorkerItem, timeNeeded: Duration): Promise<void>;
-    blacklist(taskKey: string): boolean;
-    shutdown(): Promise<void>;
-    listTasksInProgress(): string[];
-  }
+export interface Lease {
+  expiry?: number;
+  time?: number;
+  attempts?: number;
+  initial?: number;
+  busy?: boolean;
+  timeNeeded?: number;
+  extendLeasePromise?: Promise<void>;
 }
-/* eslint-enable @typescript-eslint/no-namespace */
-/* eslint-enable @typescript-eslint/no-shadow */
 
-type Duration = firelease.Duration;
-type Lease = firelease.Lease;
-type LeaseItem = firelease.LeaseItem;
-type RetryDirective = firelease.RetryDirective;
-type WorkerItem = firelease.WorkerItem;
-type FireleaseError = firelease.FireleaseError;
-type QueueOptions = firelease.QueueOptions;
-type PingReport = firelease.PingReport;
-type QueueRef = firelease.QueueRef;
-type WorkerResult = firelease.WorkerResult;
-type Worker = firelease.Worker;
-type FireleaseApi = firelease.FireleaseApi;
+export interface LeaseItem {
+  _lease?: Lease;
+  [key: string]: any;
+}
+
+export interface RetryDirective {
+  readonly [RETRY_DIRECTIVE]: true;
+}
+
+export interface WorkerItem extends LeaseItem {
+  _lease: Lease & {expiry: number};
+  readonly $ref: NodeFire;
+  readonly $leaseTimeRemaining: number;
+}
+
+export type FireleaseErrorLevel = 'fatal' | 'error' | 'warning' | 'log' | 'info' | 'debug';
+
+export interface FireleaseErrorDetails {
+  code?: string;
+  itemKey?: string;
+  phase?: string;
+  queue?: string;
+  timeNeeded?: Duration;
+}
+
+export interface FireleaseError extends Error {
+  firelease?: FireleaseErrorDetails;
+  level?: FireleaseErrorLevel;
+}
+
+export interface QueueOptions {
+  maxConcurrent?: number;
+  bufferSize?: number;
+  minLease?: Duration;
+  maxLease?: Duration;
+  healthyPingLatency?: Duration;
+  preprocess?: (item: LeaseItem) => LeaseItem;
+}
+
+export interface PingReport {
+  healthy: boolean;
+  sickQueues: (string | null)[];
+  sickSources: string[];
+  stuckTasks: number;
+  maxLatency: number;
+  tasksAcquired: number;
+}
+
+export type QueueRef = NodeFire | NodeFire[];
+export type WorkerResult = RetryDirective | Duration | Lease | null | void |
+  ((item: LeaseItem) => RetryDirective | Duration | Lease | null | void);
+export type Worker = (item: WorkerItem) => WorkerResult | PromiseLike<WorkerResult>;
+
+export interface FireleaseApi {
+  readonly RETRY: RetryDirective;
+  globalMaxConcurrent: number;
+  defaults: QueueOptions;
+  captureError: (error: FireleaseError) => void;
+  attachWorker: {
+    (refOrRefs: QueueRef, worker: Worker): void;
+    (refOrRefs: QueueRef, options: QueueOptions, worker: Worker): void;
+  };
+  pingQueues(callback?: ((report: PingReport) => void) | null, interval?: Duration): void;
+  extendLease(item: WorkerItem, timeNeeded: Duration): Promise<void>;
+  blacklist(taskKey: string): boolean;
+  shutdown(): Promise<void>;
+  listTasksInProgress(): string[];
+}
 
 interface LeaseSnapshot {
   ref: NodeFire;
@@ -140,7 +120,7 @@ interface QueuePingResult {
 const queues: Queue[] = [];
 const tasks: Record<string, Task> = {};
 const blacklistedTaskKeys = new Set<string>();
-let globalMaxConcurrent = Number.MAX_VALUE;
+export let globalMaxConcurrent = Number.MAX_VALUE;
 let globalNumConcurrent = 0;
 let shutdownResolve: (() => void) | undefined;
 let shutdownReject: ((error: Error) => void) | undefined;
@@ -150,10 +130,10 @@ let shutdownPromise: Promise<void> | undefined;
  * Return this from a worker to retry after the current lease expires, and to reset the lease
  * backoff to zero.
  */
-const RETRY = {} as RetryDirective;
+export const RETRY = {} as RetryDirective;
 
 /** Default option values for all subsequent attachWorker calls. */
-const defaults: QueueOptions = {
+export const defaults: QueueOptions = {
   maxConcurrent: Number.MAX_VALUE, bufferSize: 5, minLease: '30s', maxLease: '1h',
   healthyPingLatency: '1.5s'
 };
@@ -164,10 +144,12 @@ const scanAll = _.debounce(() => {
   });
 }, 100);
 
+export let captureError = (error: FireleaseError) => {console.error(error.stack);};
+
 const firelease = {
   RETRY,
   defaults,
-  captureError: (error: FireleaseError) => {console.error(error.stack);},
+  captureError,
   attachWorker,
   pingQueues,
   extendLease,
@@ -186,6 +168,11 @@ Object.defineProperty(firelease, 'globalMaxConcurrent', {
       scanAll();
     }
   }
+});
+
+Object.defineProperty(firelease, 'captureError', {
+  get: () => captureError,
+  set: value => {captureError = value;}
 });
 
 
@@ -330,7 +317,7 @@ class Task {
         // whether another handler has already picked up the task so leave it be.
         if (this.phase !== 'exceed') await this.ref.child('_lease/busy').set(null);
       } catch (postProcessingError) {
-        this.capturePostProcessingError(postProcessingError);
+        this.handlePostProcessingError(postProcessingError);
       }
       return;
     }
@@ -364,11 +351,11 @@ class Task {
       }, {prefetchValue: false}) as LeaseItem | null | undefined;
       if (item2) item._lease = item2._lease as Lease & {expiry: number};
     } catch (postProcessingError) {
-      this.capturePostProcessingError(postProcessingError);
+      this.handlePostProcessingError(postProcessingError);
     }
   }
 
-  capturePostProcessingError(error: FireleaseError) {
+  handlePostProcessingError(error: FireleaseError) {
     if (/timeout/i.test(error.message) && !this.source.connected) return;
     console.log(`Queue item ${this.key} post-processing error: ${error.message}`);
     error.firelease = _.assign(
@@ -642,9 +629,13 @@ class Queue {
  *          function will be executed in a transaction to ensure atomicity.
  *        All of these values can also be wrapped in a promise.
  */
-function attachWorker(refOrRefs: QueueRef, worker: Worker): void;
-function attachWorker(refOrRefs: QueueRef, options: QueueOptions, worker: Worker): void;
-function attachWorker(refOrRefs: QueueRef, options: QueueOptions | Worker, worker?: Worker): void {
+export function attachWorker(refOrRefs: QueueRef, worker: Worker): void;
+export function attachWorker(refOrRefs: QueueRef, options: QueueOptions, worker: Worker): void;
+export function attachWorker(
+  refOrRefs: QueueRef,
+  options: QueueOptions | Worker,
+  worker?: Worker
+): void {
   const queue = new Queue(refOrRefs, options, worker);
   queues.push(queue);
   queue.start();
@@ -675,11 +666,11 @@ let pingCallback: ((report: PingReport) => void) | null | undefined;
  * @param {number | string} interval The interval at which to ping queues, to both check the
  *        current response latency and make sure no tasks are stuck.  Defaults to 1 minute.
  */
-function pingQueues(
+export function pingQueues(
   callback?: ((report: PingReport) => void) | null,
   interval?: Duration
 ): void {
-  const normalizedInterval = duration(interval ?? PING_INTERVAL);
+  const normalizedInterval = interval ? duration(interval) : PING_INTERVAL;
   pingIntervalHandle?.clear();
   pingCallback = callback;
   pingIntervalHandle = timers.setInterval(() => {
@@ -784,7 +775,7 @@ function waitUntilDeleted(ref: NodeFire, timeout: number) {
  * @return {Promise} A promise that will be resolved when the lease has been extended, and rejected
  *         if something went wrong and the worker should abort.
  */
-function extendLease(item: WorkerItem, timeNeeded: Duration): Promise<void> {
+export function extendLease(item: WorkerItem, timeNeeded: Duration): Promise<void> {
   if (!item?._lease?.expiry) throw new Error('Invalid task');
   item._lease.timeNeeded = Math.max(item._lease.timeNeeded ?? 0, duration(timeNeeded));
   if (!item._lease.extendLeasePromise) {
@@ -852,7 +843,7 @@ async function updateLease(item: WorkerItem, timeNeeded: Duration) {
  *        can be obtained from an error using `error.firelease.itemKey`.
  * @return {boolean} True if the task key was added to the list, false if it was already present.
  */
-function blacklist(taskKey: string): boolean {
+export function blacklist(taskKey: string): boolean {
   if (blacklistedTaskKeys.has(taskKey)) return false;
   blacklistedTaskKeys.add(taskKey);
   const task = tasks[taskKey];
@@ -865,7 +856,7 @@ function blacklist(taskKey: string): boolean {
  * Shuts down firelease by refusing to take new tasks.
  * @return {Promise<void>} A promise that resolves when the shutdown is complete.
  */
-function shutdown(): Promise<void> {
+export function shutdown(): Promise<void> {
   globalMaxConcurrent = 0;
   if (!shutdownPromise) {
     shutdownPromise = new Promise((resolve, reject) => {
@@ -881,8 +872,8 @@ function shutdown(): Promise<void> {
 /**
  * Lists the URLs of all tasks that are currently being worked on.
  */
-function listTasksInProgress(): string[] {
+export function listTasksInProgress(): string[] {
   return _(tasks).pickBy('working').keys().value();
 }
 
-export = firelease;
+export default firelease;

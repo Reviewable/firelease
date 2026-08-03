@@ -1,9 +1,7 @@
 import assert from 'node:assert';
 import type NodeFire from 'nodefire';
 
-// Keep the package's CommonJS export shape under test.
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-import firelease = require('../src');
+import firelease from '../src';
 
 interface FakeLease {
   [key: string]: unknown;
