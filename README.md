@@ -105,16 +105,16 @@ Shuts down firelease by refusing to take new tasks, and returns a promise that r
 
 Returns an array of the URLs of all tasks that are currently being worked on.
 
-There are also some module-level settings you can change:
+The module also exports a mutable `settings` object:
 
-```globalMaxConcurrent: {number}```
+```settings.globalMaxConcurrent: {number}```
 
 Set this to the maximum number of concurrent tasks being executed at any moment across all queues.
 
-```defaults: {Object}```
-
-Default option values for all subsequent attachWorker calls.  See that function for details.
-
-```captureError: {function(Error)}```
+```settings.captureError: {function(Error)}```
 
 A function used to capture errors.  Defaults to logging the stack to the console, but you may want to change it to something else in production.  The function should take a single exception argument.
+
+```defaults: {Object}```
+
+Mutable default option values for all subsequent attachWorker calls.  See that function for details.

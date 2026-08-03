@@ -73,11 +73,15 @@ export type WorkerResult = RetryDirective | Duration | Lease | null | void |
   ((item: LeaseItem) => RetryDirective | Duration | Lease | null | void);
 export type Worker = (item: WorkerItem) => WorkerResult | PromiseLike<WorkerResult>;
 
+export interface FireleaseSettings {
+  globalMaxConcurrent: number;
+  captureError: (error: FireleaseError) => void;
+}
+
 export interface FireleaseApi {
   readonly RETRY: RetryDirective;
-  globalMaxConcurrent: number;
-  defaults: QueueOptions;
-  captureError: (error: FireleaseError) => void;
+  readonly settings: FireleaseSettings;
+  readonly defaults: QueueOptions;
   attachWorker: {
     (refOrRefs: QueueRef, worker: Worker): void;
     (refOrRefs: QueueRef, options: QueueOptions, worker: Worker): void;
@@ -120,7 +124,7 @@ interface QueuePingResult {
 const queues: Queue[] = [];
 const tasks: Record<string, Task> = {};
 const blacklistedTaskKeys = new Set<string>();
-export let globalMaxConcurrent = Number.MAX_VALUE;
+let globalMaxConcurrent = Number.MAX_VALUE;
 let globalNumConcurrent = 0;
 let shutdownResolve: (() => void) | undefined;
 let shutdownReject: ((error: Error) => void) | undefined;
@@ -144,36 +148,32 @@ const scanAll = _.debounce(() => {
   });
 }, 100);
 
-export let captureError = (error: FireleaseError) => {console.error(error.stack);};
-
-const firelease = {
-  RETRY,
-  defaults,
-  captureError,
-  attachWorker,
-  pingQueues,
-  extendLease,
-  blacklist,
-  shutdown,
-  listTasksInProgress
-} as FireleaseApi;
-
-Object.defineProperty(firelease, 'globalMaxConcurrent', {
-  get: () => globalMaxConcurrent,
-  set: (value: number) => {
+export const settings: FireleaseSettings = {
+  get globalMaxConcurrent() {
+    return globalMaxConcurrent;
+  },
+  set globalMaxConcurrent(value: number) {
     globalMaxConcurrent = value;
     if (value) {
       shutdownReject?.(new Error('Queues restarted'));
       shutdownPromise = shutdownResolve = shutdownReject = undefined;
       scanAll();
     }
-  }
-});
+  },
+  captureError: error => {console.error(error.stack);}
+};
 
-Object.defineProperty(firelease, 'captureError', {
-  get: () => captureError,
-  set: value => {captureError = value;}
-});
+const firelease = Object.freeze({
+  RETRY,
+  settings,
+  defaults,
+  attachWorker,
+  pingQueues,
+  extendLease,
+  blacklist,
+  shutdown,
+  listTasksInProgress
+}) as FireleaseApi;
 
 
 class Task {
@@ -261,7 +261,7 @@ class Task {
       if (!/timeout/i.test(error.message) || this.source.connected) {
         console.log(`Queue item ${this.key} lease transaction error: ${error.message}`);
         error.firelease = _.assign(error.firelease ?? {}, {itemKey: this.key, phase: 'leasing'});
-        firelease.captureError(error);
+        settings.captureError(error);
         timers.setTimeout(this.queue.scan, ms('3s'));
       }
     }
@@ -312,7 +312,7 @@ class Task {
         processingError.firelease = _.assign(
           processingError.firelease ?? {}, {itemKey: this.key, phase: 'processing'});
         processingError.level ??= 'warning';
-        firelease.captureError(processingError);
+        settings.captureError(processingError);
         // Reset busy flag, unless we exceeded our original lease in which case we can't be sure
         // whether another handler has already picked up the task so leave it be.
         if (this.phase !== 'exceed') await this.ref.child('_lease/busy').set(null);
@@ -360,7 +360,7 @@ class Task {
     console.log(`Queue item ${this.key} post-processing error: ${error.message}`);
     error.firelease = _.assign(
       error.firelease ?? {}, {itemKey: this.key, phase: 'post-processing'});
-    firelease.captureError(error);
+    settings.captureError(error);
   }
 }
 
@@ -397,7 +397,7 @@ class QueueSource {
         if (failed) {
           if (this.mode === 'initial') {
             console.log(`Queue worker ${this.ref} failed to load tasks, entering failsafe mode`);
-            firelease.captureError(_.assign(
+            settings.captureError(_.assign(
               new Error('Queue worker entering failsafe mode'),
               {extra: {queue: this.ref.toString()}}));
           }
@@ -465,7 +465,7 @@ class QueueSource {
     console.log(`Queue worker ${this.ref} interrupted:`, error.message);
     error.firelease =
       _.assign(error.firelease ?? {}, {queue: this.ref.toString(), phase: 'crashing'});
-    firelease.captureError(error);
+    settings.captureError(error);
     // Give the error capture a chance to process before exiting.
     _.delay(() => {process.exit(1);}, ms('3s'));
 
@@ -569,7 +569,7 @@ class Queue {
         }
       } catch (error) {
         error.message = `Unexpected error in Queue.process: ${error.message}`;
-        firelease.captureError(error);
+        settings.captureError(error);
       }
     }
   }
@@ -684,7 +684,7 @@ async function runPingCheck() {
   } catch (error) {
     error.firelease = _.assign(error.firelease ?? {}, {phase: 'pinging'});
     error.level = 'warning';
-    firelease.captureError(error);
+    settings.captureError(error);
     pinging = false;
   }
 }

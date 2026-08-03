@@ -1,10 +1,10 @@
 import NodeFire from 'nodefire';
 import firelease, {
-  RETRY, attachWorker, blacklist, captureError, defaults, extendLease, globalMaxConcurrent,
-  listTasksInProgress, pingQueues, shutdown, type Duration, type FireleaseApi,
-  type FireleaseError, type FireleaseErrorDetails, type FireleaseErrorLevel, type Lease,
-  type LeaseItem, type PingReport, type QueueOptions, type QueueRef, type RetryDirective,
-  type Worker, type WorkerItem, type WorkerResult
+  RETRY, attachWorker, blacklist, defaults, extendLease, listTasksInProgress, pingQueues, settings,
+  shutdown, type Duration, type FireleaseApi, type FireleaseError, type FireleaseErrorDetails,
+  type FireleaseErrorLevel, type FireleaseSettings, type Lease, type LeaseItem, type PingReport,
+  type QueueOptions, type QueueRef, type RetryDirective, type Worker, type WorkerItem,
+  type WorkerResult
 } from '../src';
 
 // Verify the package's default and named TypeScript exports.
@@ -20,6 +20,7 @@ declare const queueOptions: QueueOptions;
 declare const duration: Duration;
 declare const errorDetails: FireleaseErrorDetails;
 declare const errorLevel: FireleaseErrorLevel;
+declare const fireleaseSettings: FireleaseSettings;
 declare const queue: QueueRef;
 declare const retry: RetryDirective;
 declare const worker: Worker;
@@ -27,15 +28,14 @@ declare const workerResult: WorkerResult;
 declare const api: FireleaseApi;
 void [
   lease, leaseItem, workerItem, fireleaseError, pingReport, queueOptions, duration, errorDetails,
-  errorLevel, queue, retry, worker, workerResult, api
+  errorLevel, fireleaseSettings, queue, retry, worker, workerResult, api
 ];
-const namedGlobalMaxConcurrent: number = globalMaxConcurrent;
-const namedCaptureError: (error: FireleaseError) => void = captureError;
 const namedDefaults: QueueOptions = defaults;
 const namedRetry: RetryDirective = RETRY;
+const namedSettings: FireleaseSettings = settings;
 void [
   attachWorker, blacklist, extendLease, listTasksInProgress, pingQueues, shutdown,
-  namedGlobalMaxConcurrent, namedCaptureError, namedDefaults, namedRetry
+  namedDefaults, namedRetry, namedSettings
 ];
 
 // @ts-expect-error Generator workers are no longer supported.
@@ -68,8 +68,12 @@ firelease.pingQueues(report => {
   void tasksAcquired;
 });
 
+firelease.settings.globalMaxConcurrent = 10;
+firelease.settings.captureError = error => {void error.firelease;};
+// @ts-expect-error Mutable settings are nested under `settings`.
 firelease.globalMaxConcurrent = 10;
-firelease.captureError = error => {void error.firelease;};
+// @ts-expect-error Mutable settings are nested under `settings`.
+firelease.captureError = () => undefined;
 const shutdownPromise: Promise<void> = firelease.shutdown();
 const taskUrls: string[] = firelease.listTasksInProgress();
 void shutdownPromise;
