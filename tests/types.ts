@@ -81,6 +81,7 @@ firelease.pingQueues(report => {
 firelease.settings.globalMaxConcurrent = 10;
 firelease.settings.safeQueueSize = 6000;
 firelease.settings.queueCheckInterval = '5m';
+firelease.settings.queueLoadTimeout = '1m';
 firelease.settings.captureError = error => {void error.firelease;};
 const currentStats: FireleaseStats = firelease.stats;
 // @ts-expect-error Mutable settings are nested under `settings`.

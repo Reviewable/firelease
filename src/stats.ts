@@ -5,7 +5,7 @@ export type QueueSourceMode = 'full' | 'safe';
 function exposeGetters(instance: object, properties: string[]) {
   const prototype = Object.getPrototypeOf(instance);
   for (const property of properties) {
-    const descriptor = Object.getOwnPropertyDescriptor(prototype, property)!;
+    const descriptor = Object.getOwnPropertyDescriptor(prototype, property);
     Object.defineProperty(instance, property, {...descriptor, enumerable: true});
   }
 }
@@ -45,7 +45,7 @@ export class QueueStats {
   }
 
   get maxLatency() {
-    return _.max(_.map(this.sources, source => source.latency ?? 0)) ?? 0;
+    return _(this.sources).map('latency').max() || 0;
   }
 }
 
@@ -62,11 +62,11 @@ export class FireleaseStats {
   }
 
   get healthy() {
-    return _.every(this.queues, queue => queue.healthy);
+    return _.every(this.queues, 'healthy');
   }
 
   get sickQueues() {
-    return _(this.queues).reject(queue => queue.healthy).map(queue => queue.key).value();
+    return _(this.queues).reject('healthy').map('key').value();
   }
 
   get sickSources() {
@@ -83,7 +83,7 @@ export class FireleaseStats {
   }
 
   get maxLatency() {
-    return _.max(_.map(this.queues, queue => queue.maxLatency)) ?? 0;
+    return _(this.queues).map('maxLatency').max() || 0;
   }
 
   get tasksAcquired() {

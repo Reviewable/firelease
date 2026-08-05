@@ -125,6 +125,12 @@ sources enter full mode only below `safeQueueSize * 0.85` and demote from full m
 How often safe-mode sources enqueue a shallow REST count check, with 5% random jitter.  Defaults to
 5 minutes.
 
+```settings.queueLoadTimeout: {number | string}```
+
+How long Firelease waits for a queue listener's initial value before treating the load as stalled.
+Defaults to 1 minute.  A stalled full-mode load falls back to safe mode; a stalled safe-mode load
+is fatal because no bounded listener is available to process the queue.
+
 ```settings.captureError: {function(Error)}```
 
 A function used to capture errors.  Defaults to logging the stack to the console, but you may want to change it to something else in production.  The function should take a single exception argument.

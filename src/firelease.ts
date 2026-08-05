@@ -6,7 +6,7 @@ import {
   FireleaseStats, QueueSourceStats, QueueStats, type QueueSourceMode
 } from './stats';
 
-export const TESTABLES = {resetBetweenTests};
+export const TESTABLES = {resetBetweenTests, waitUntilDeleted};
 
 const PING_INTERVAL = ms('1m');
 const PING_KEY = 'ping';
@@ -61,6 +61,7 @@ export interface FireleaseErrorDetails {
   reason?: string;
   source?: string;
   timeNeeded?: Duration;
+  timeout?: Duration;
 }
 
 export interface FireleaseError extends Error {
@@ -88,6 +89,7 @@ export interface FireleaseSettings {
   globalMaxConcurrent: number;
   safeQueueSize: number;
   queueCheckInterval: Duration;
+  queueLoadTimeout: Duration;
   captureError: (error: FireleaseError) => void;
 }
 
@@ -128,6 +130,7 @@ let globalMaxConcurrent = Number.MAX_VALUE;
 let globalNumConcurrent = 0;
 let safeQueueSize = 6000;
 let queueCheckInterval = ms('5m');
+let queueLoadTimeout = ms('1m');
 let shutdownResolve: (() => void) | undefined;
 let shutdownReject: ((error: Error) => void) | undefined;
 let shutdownPromise: Promise<void> | undefined;
@@ -184,6 +187,16 @@ export const settings: FireleaseSettings = {
       throw new Error('queueCheckInterval must be a positive finite duration');
     }
     queueCheckInterval = normalizedValue;
+  },
+  get queueLoadTimeout() {
+    return queueLoadTimeout;
+  },
+  set queueLoadTimeout(value: Duration) {
+    const normalizedValue = duration(value);
+    if (!Number.isFinite(normalizedValue) || normalizedValue <= 0) {
+      throw new Error('queueLoadTimeout must be a positive finite duration');
+    }
+    queueLoadTimeout = normalizedValue;
   },
   captureError: defaultCaptureError
 };
@@ -399,6 +412,8 @@ interface QueueCheckJob {
   resolve: () => void;
 }
 
+type QueueLoadResult = 'loaded' | 'stopped' | 'timed-out';
+
 class QueueCheckQueue {
   jobs: QueueCheckJob[] = [];
   active?: QueueCheckJob;
@@ -417,11 +432,10 @@ class QueueCheckQueue {
         'queue-check-coalesced', 'Firelease queue check coalesced', 'warning', {description});
       return Promise.resolve();
     }
-    let resolve!: () => void;
-    const promise = new Promise<void>(promiseResolve => {resolve = promiseResolve;});
-    this.jobs.push({source, epoch, description, run, resolve});
-    void this.drain();
-    return promise;
+    return new Promise<void>(resolve => {
+      this.jobs.push({source, epoch, description, run, resolve});
+      void this.drain();
+    });
   }
 
   reset() {
@@ -520,6 +534,7 @@ class QueueListener {
   };
 
   readonly onValue = () => {
+    if (this.stopped) return;
     this.loaded = true;
     this.query.off('value', this.onValue);
     this.notify();
@@ -531,15 +546,22 @@ class QueueListener {
     this.stop();
   };
 
-  waitForLoad() {
-    if (this.loaded || this.stopped) return Promise.resolve(this.loaded);
-    return new Promise<boolean>(resolve => {
+  waitForLoad(timeout: number): Promise<QueueLoadResult> {
+    if (this.loaded) return Promise.resolve('loaded');
+    if (this.stopped) return Promise.resolve('stopped');
+    return new Promise(resolve => {
+      let timeoutHandle: timers.Timeout;  // eslint-disable-line prefer-const
       const onChange = () => {
         if (!this.loaded && !this.stopped) return;
         this.observers.delete(onChange);
-        resolve(this.loaded);
+        timeoutHandle?.clear();
+        resolve(this.loaded ? 'loaded' : 'stopped');
       };
       this.observers.add(onChange);
+      timeoutHandle = timers.setTimeout(() => {
+        this.observers.delete(onChange);
+        resolve('timed-out');
+      }, timeout);
     });
   }
 
@@ -568,6 +590,7 @@ class QueueSource {
   checkTimer?: timers.Timeout;
   demotionTimer?: timers.Timeout;
   exitTimer?: timers.Timeout;
+  promotionNotBeforeTimestamp = 0;
   initialStartupComplete = false;
   readonly connectionRef: NodeFire;
   readonly stats: QueueSourceStats;
@@ -631,10 +654,11 @@ class QueueSource {
         if (!this.isCurrent(epoch)) return;
         targetMode = count !== null && count < fullQueueSize() ? 'full' : 'safe';
       }
-      if (!await this.replaceListener(targetMode, epoch)) return;
+      const loadedMode = await this.loadListener(targetMode, epoch, 'startup');
+      if (!loadedMode) return;
       const loadedTaskCount = this.activeListener?.snapshots.size ?? 0;
-      console.log(`Queue worker ${this.ref} loaded ${loadedTaskCount} tasks in ${targetMode} mode`);
-      if (targetMode === 'safe') this.scheduleSafeCheck();
+      console.log(`Queue worker ${this.ref} loaded ${loadedTaskCount} tasks in ${loadedMode} mode`);
+      if (loadedMode === 'safe') this.scheduleSafeCheck();
       this.initialStartupComplete = true;
     } catch (e) {
       if (this.initialStartupComplete) throw e;
@@ -694,12 +718,19 @@ class QueueSource {
         'safe-queue-size-mismatch', 'Firelease safe queue size mismatch', 'error',
         {count, delta, listenerLimit, liveCount});
     }
-    if (count < fullQueueSize()) await this.promote(epoch);
+    if (count < fullQueueSize() && performance.now() >= this.promotionNotBeforeTimestamp) {
+      await this.promote(epoch);
+    }
   }
 
   async promote(epoch: number) {
     if (!this.isCurrent(epoch) || this.mode !== 'safe') return;
-    if (!await this.replaceListener('full', epoch)) return;
+    const loadedMode = await this.loadListener('full', epoch, 'promotion');
+    if (!loadedMode) return;
+    if (loadedMode === 'safe') {
+      this.scheduleSafeCheck();
+      return;
+    }
     console.log(
       `Queue worker ${this.ref} promoted to full mode with` +
         ` ${this.activeListener?.snapshots.size ?? 0} tasks`);
@@ -720,7 +751,7 @@ class QueueSource {
     if (!this.isCurrent(epoch) || this.mode !== 'full' ||
         (this.activeListener?.snapshots.size ?? 0) <= settings.safeQueueSize) return;
     const lastFullSize = this.activeListener?.snapshots.size ?? 0;
-    if (!await this.replaceListener('safe', epoch)) return;
+    if (!await this.loadListener('safe', epoch, 'demotion')) return;
     this.stats.size = lastFullSize;
     this.stats.sizeTimestamp = Date.now();
     console.log(
@@ -729,8 +760,33 @@ class QueueSource {
     this.scheduleSafeCheck();
   }
 
-  async replaceListener(mode: QueueSourceMode, epoch: number) {
-    if (!this.isCurrent(epoch)) return false;
+  async loadListener(
+    mode: QueueSourceMode, epoch: number, description: string
+  ): Promise<QueueSourceMode | undefined> {
+    let details = {description, mode, timeout: queueLoadTimeout};
+    const result = await this.replaceListener(mode, epoch);
+    if (result === 'loaded') {
+      if (mode === 'full') this.promotionNotBeforeTimestamp = 0;
+      return mode;
+    }
+    if (result === 'stopped') return;
+
+    if (mode === 'full') {
+      this.reportError(
+        'queue-load-timeout', 'Firelease queue load timed out', 'warning', details);
+      this.promotionNotBeforeTimestamp = performance.now() + queueCheckInterval * 3;
+      const fallbackResult = await this.replaceListener('safe', epoch);
+      if (fallbackResult === 'loaded') return 'safe';
+      if (fallbackResult === 'stopped') return;
+      details = {description: `${description} fallback`, mode: 'safe', timeout: queueLoadTimeout};
+    }
+
+    this.crash(
+      'queue-load-timeout', 'Firelease queue load timed out', new Error('timeout'), details);
+  }
+
+  async replaceListener(mode: QueueSourceMode, epoch: number): Promise<QueueLoadResult> {
+    if (!this.isCurrent(epoch)) return 'stopped';
     this.activeListener?.stop();
     this.activeListener = undefined;
     this.clearTasks();
@@ -744,17 +800,19 @@ class QueueSource {
     const listener = new QueueListener(this, mode);
     this.activeListener = listener;
     listener.start();
-    const loaded = await listener.waitForLoad();
-    if (!loaded || !this.isCurrent(epoch) || this.activeListener !== listener) {
+    const result = await listener.waitForLoad(queueLoadTimeout);
+    if (result !== 'loaded' || !this.isCurrent(epoch) || this.activeListener !== listener) {
       listener.stop();
-      if (this.activeListener === listener) this.activeListener = undefined;
-      if (this.isCurrent(epoch) && this.mode === 'safe') this.scheduleSafeCheck();
-      return false;
+      if (this.activeListener === listener) {
+        this.activeListener = undefined;
+        this.clearTasks();
+      }
+      return result === 'timed-out' && this.isCurrent(epoch) ? 'timed-out' : 'stopped';
     }
     this.mode = mode;
     this.stats.mode = mode;
     listener.notify();
-    return loaded;
+    return 'loaded';
   }
 
   readonly onListenerSize = (listener: QueueListener) => {
@@ -775,6 +833,7 @@ class QueueSource {
     this.checkTimer = undefined;
     this.demotionTimer?.clear();
     this.demotionTimer = undefined;
+    this.promotionNotBeforeTimestamp = 0;
   }
 
   async checkPing() {
@@ -1091,13 +1150,27 @@ async function checkPings() {
 
 function waitUntilDeleted(ref: NodeFire, timeout: number) {
   return new Promise<void>((resolve, reject) => {
+    let settled = false;
+    let timeoutHandle: timers.Timeout | undefined;  // eslint-disable-line prefer-const
+    function finish(error?: Error) {
+      if (settled) return;
+      settled = true;
+      timeoutHandle?.clear();
+      ref.off('value', onValue);
+      if (error) reject(error);
+      else resolve();
+    }
     function onValue(snap: LeaseSnapshot) {
       if (snap.val()) return;
-      ref.off('value', onValue);
-      resolve();
+      finish();
     }
-    ref.on('value', onValue, reject);
-    if (timeout) timers.setTimeout(() => {reject(new Error('timeout'));}, timeout);
+    timeoutHandle = timeout ?
+      timers.setTimeout(() => {finish(new Error('timeout'));}, timeout) : undefined;
+    try {
+      ref.on('value', onValue, finish);
+    } catch (error) {
+      finish(error);
+    }
   });
 }
 
@@ -1235,6 +1308,7 @@ function resetBetweenTests() {
   globalNumConcurrent = 0;
   safeQueueSize = 6000;
   queueCheckInterval = ms('5m');
+  queueLoadTimeout = ms('1m');
   shutdownResolve = shutdownReject = shutdownPromise = undefined;
   delete defaults.preprocess;
   _.assign(defaults, {
