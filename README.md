@@ -142,8 +142,17 @@ Mutable default option values for all subsequent attachWorker calls.  See that f
 ```stats: {Object}```
 
 The live stats object also passed to the ping callback.  Global fields include `healthy`,
-`sickQueues`, `sickSources`, `stuckTasks`, `maxLatency`, and `tasksAcquired`.  Each entry in `queues`
-includes its own health, latency, acquisition count, and all physical `sources`.  Queue-level
+`sickQueues`, `sickSources`, `stuckTasks`, `maxLatency`, `leaseTransactions`, and the legacy
+`tasksAcquired`.  `leaseTransactions` contains cumulative `acquired`, `contended`, `tries`, and
+`duration` (in milliseconds) totals for successfully settled task lease transactions.  It is
+available for every physical source, with live additive rollups on each logical queue and at the
+global level.  `tries` and `duration` come from NodeFire transaction metadata; dividing them by
+`acquired + contended` gives their respective per-transaction averages.  Calling
+`resetLeaseTransactions()` on a source, queue, or the global stats returns its pre-reset totals and
+resets the corresponding source counters to zero, allowing each reporting interval to be emitted
+directly to a metrics service.  The legacy `tasksAcquired` field remains lifetime-cumulative and is
+not reset.  Each entry in `queues` includes its own health, latency, leasing totals, and all physical
+`sources`.  Queue-level
 `size` and `sizeDelta` sum their source values when all are known, `sizeTimestamp` is the oldest
 source timestamp, and `mode` is `full`, `safe`, or `mixed`.  Source stats include `connected`,
 current `mode` (`full` or `safe`), last known `size`, `sizeTimestamp` when the size came from a

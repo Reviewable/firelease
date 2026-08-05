@@ -27,11 +27,19 @@ test('stats are derived through the hierarchy on demand', () => {
   sourceStats.sizeDelta = 1;
   sourceStats.sizeTimestamp = 200;
   sourceStats.latency = 12;
+  sourceStats.leaseTransactions.acquired = 2;
+  sourceStats.leaseTransactions.contended = 3;
+  sourceStats.leaseTransactions.tries = 8;
+  sourceStats.leaseTransactions.duration = 50;
   secondSourceStats.connected = true;
   secondSourceStats.size = 6;
   secondSourceStats.sizeDelta = 2;
   secondSourceStats.sizeTimestamp = 100;
   secondSourceStats.latency = 8;
+  secondSourceStats.leaseTransactions.acquired = 1;
+  secondSourceStats.leaseTransactions.contended = 2;
+  secondSourceStats.leaseTransactions.tries = 5;
+  secondSourceStats.leaseTransactions.duration = 30;
   queueStats.tasksAcquired = 3;
   stuckTasks = 2;
   assert.strictEqual(hierarchyStats.healthy, true);
@@ -39,6 +47,10 @@ test('stats are derived through the hierarchy on demand', () => {
   assert.deepStrictEqual(hierarchyStats.sickSources, []);
   assert.strictEqual(queueStats.maxLatency, 12);
   assert.strictEqual(hierarchyStats.maxLatency, 12);
+  assert.deepStrictEqual(queueStats.leaseTransactions, {
+    acquired: 3, contended: 5, tries: 13, duration: 80
+  });
+  assert.deepStrictEqual(hierarchyStats.leaseTransactions, queueStats.leaseTransactions);
   assert.strictEqual(hierarchyStats.tasksAcquired, 3);
   assert.strictEqual(hierarchyStats.stuckTasks, 2);
   assert.strictEqual(queueStats.size, 10);
@@ -52,7 +64,10 @@ test('stats are derived through the hierarchy on demand', () => {
   secondSourceStats.sizeDelta = 2;
   assert.deepStrictEqual(
     Object.keys(hierarchyStats),
-    ['queues', 'healthy', 'sickQueues', 'sickSources', 'stuckTasks', 'maxLatency', 'tasksAcquired'],
+    [
+      'queues', 'healthy', 'sickQueues', 'sickSources', 'stuckTasks', 'maxLatency',
+      'leaseTransactions', 'tasksAcquired'
+    ],
   );
   assert.deepStrictEqual(JSON.parse(JSON.stringify(hierarchyStats)), {
     queues: [{
@@ -65,6 +80,7 @@ test('stats are derived through the hierarchy on demand', () => {
         size: 4,
         healthy: true,
         latency: 12,
+        leaseTransactions: {acquired: 2, contended: 3, tries: 8, duration: 50},
         ref: 'https://stats.example.test/queues/jobs',
         sizeDelta: 1,
         sizeTimestamp: 200
@@ -74,6 +90,7 @@ test('stats are derived through the hierarchy on demand', () => {
         size: 6,
         healthy: true,
         latency: 8,
+        leaseTransactions: {acquired: 1, contended: 2, tries: 5, duration: 30},
         ref: 'https://second.example.test/queues/jobs',
         sizeTimestamp: 100,
         sizeDelta: 2
@@ -83,14 +100,35 @@ test('stats are derived through the hierarchy on demand', () => {
       sizeDelta: 3,
       sizeTimestamp: 100,
       healthy: true,
-      maxLatency: 12
+      maxLatency: 12,
+      leaseTransactions: {acquired: 3, contended: 5, tries: 13, duration: 80}
     }],
     healthy: true,
     sickQueues: [],
     sickSources: [],
     stuckTasks: 2,
     maxLatency: 12,
+    leaseTransactions: {acquired: 3, contended: 5, tries: 13, duration: 80},
     tasksAcquired: 3
+  });
+
+  assert.deepStrictEqual(queueStats.resetLeaseTransactions(), {
+    acquired: 3, contended: 5, tries: 13, duration: 80
+  });
+  assert.deepStrictEqual(queueStats.leaseTransactions, {
+    acquired: 0, contended: 0, tries: 0, duration: 0
+  });
+  assert.deepStrictEqual(hierarchyStats.leaseTransactions, queueStats.leaseTransactions);
+  assert.strictEqual(hierarchyStats.tasksAcquired, 3, 'legacy count remains cumulative');
+
+  sourceStats.leaseTransactions.acquired = 1;
+  sourceStats.leaseTransactions.tries = 2;
+  sourceStats.leaseTransactions.duration = 7;
+  assert.deepStrictEqual(hierarchyStats.resetLeaseTransactions(), {
+    acquired: 1, contended: 0, tries: 2, duration: 7
+  });
+  assert.deepStrictEqual(sourceStats.leaseTransactions, {
+    acquired: 0, contended: 0, tries: 0, duration: 0
   });
   TESTABLES.resetBetweenTests();
 });

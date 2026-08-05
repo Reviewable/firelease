@@ -1,6 +1,6 @@
 import _ from 'lodash';
 import ms from 'ms';
-import NodeFire from 'nodefire';
+import NodeFire, {type TransactionMetadata} from 'nodefire';
 import * as timers from 'safe-timers';
 import {
   FireleaseStats, QueueSourceStats, QueueStats, type QueueSourceMode
@@ -261,12 +261,14 @@ class Task {
   async process() {
     let startTimestamp = 0;
     let acquired = false;
+    let contended = false;
     let reschedule = true;
     this.working = true;
     this.phase = 'lease';
     const transactionPromise = this.ref.transaction(itemValue => {
       const item = itemValue as LeaseItem | null;
       acquired = false;
+      contended = false;
       if (tasks[this.key] !== this || this.removed) return;
       if (!item || this.ref.key === PING_KEY) {
         acquired = true;
@@ -276,6 +278,7 @@ class Task {
       // console.log('txn  ', this.ref.key, 'lease', item._lease, 'now', startTimestamp);
       // Check if another process beat us to it.
       if (item._lease?.expiry && item._lease.expiry > startTimestamp) {
+        contended = true;
         return item;
       }
       acquired = true;
@@ -291,8 +294,11 @@ class Task {
       const item = await transactionPromise;
       if (acquired && item !== null && this.ref.key !== PING_KEY) {
         if (!_.isObject(item)) throw new Error(`item not an object: ${item}`);
+        this.recordLeaseTransaction('acquired', transactionPromise.transaction);
         this.queue.stats.tasksAcquired++;
         await this.run(item as WorkerItem, startTimestamp);
+      } else if (contended) {
+        this.recordLeaseTransaction('contended', transactionPromise.transaction);
       }
     } catch (error) {
       reschedule = false;
@@ -313,6 +319,15 @@ class Task {
       // lease-expiry timer.  Listener swaps can replay the task while it is still working.
       timers.setTimeout(() => {void this.queue.process(this);}, 0);
     }
+  }
+
+  recordLeaseTransaction(
+    outcome: 'acquired' | 'contended', transaction: TransactionMetadata
+  ) {
+    const leaseStats = this.source.stats.leaseTransactions;
+    leaseStats[outcome] += 1;
+    leaseStats.tries += transaction.tries ?? 0;
+    leaseStats.duration += transaction.duration ?? 0;
   }
 
   async run(item: WorkerItem, startTimestamp: number) {

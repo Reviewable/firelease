@@ -3,6 +3,35 @@ import _ from 'lodash';
 export type QueueSourceMode = 'full' | 'safe';
 export type QueueMode = QueueSourceMode | 'mixed';
 
+export interface LeaseTransactionStats {
+  acquired: number;
+  contended: number;
+  tries: number;
+  duration: number;
+}
+
+function createLeaseTransactionStats(): LeaseTransactionStats {
+  return {acquired: 0, contended: 0, tries: 0, duration: 0};
+}
+
+function rollUpLeaseTransactions(items: LeaseTransactionStats[]) {
+  const result = createLeaseTransactionStats();
+  result.acquired = _.sumBy(items, 'acquired');
+  result.contended = _.sumBy(items, 'contended');
+  result.tries = _.sumBy(items, 'tries');
+  result.duration = _.sumBy(items, 'duration');
+  return result;
+}
+
+function resetLeaseTransactions(stats: LeaseTransactionStats) {
+  const snapshot = {...stats};
+  stats.acquired = 0;
+  stats.contended = 0;
+  stats.tries = 0;
+  stats.duration = 0;
+  return snapshot;
+}
+
 function exposeGetters(instance: object, properties: string[]) {
   const prototype = Object.getPrototypeOf(instance);
   for (const property of properties) {
@@ -20,8 +49,13 @@ export class QueueSourceStats {
   healthy = true;
   latency: number | null = null;
   declare pingTimestamp?: number;
+  readonly leaseTransactions = createLeaseTransactionStats();
 
   constructor(readonly ref: string) {}
+
+  resetLeaseTransactions() {
+    return resetLeaseTransactions(this.leaseTransactions);
+  }
 }
 
 export class QueueStats {
@@ -32,7 +66,10 @@ export class QueueStats {
     readonly key: string | null,
     readonly sources: QueueSourceStats[]
   ) {
-    exposeGetters(this, ['mode', 'size', 'sizeDelta', 'sizeTimestamp', 'healthy', 'maxLatency']);
+    exposeGetters(
+      this,
+      ['mode', 'size', 'sizeDelta', 'sizeTimestamp', 'healthy', 'maxLatency', 'leaseTransactions'],
+    );
   }
 
   get mode(): QueueMode {
@@ -61,6 +98,16 @@ export class QueueStats {
   get maxLatency() {
     return _(this.sources).map('latency').max() || 0;
   }
+
+  get leaseTransactions() {
+    return rollUpLeaseTransactions(_.map(this.sources, 'leaseTransactions'));
+  }
+
+  resetLeaseTransactions() {
+    const snapshot = this.leaseTransactions;
+    _.forEach(this.sources, source => {source.resetLeaseTransactions();});
+    return snapshot;
+  }
 }
 
 export class FireleaseStats {
@@ -70,7 +117,11 @@ export class FireleaseStats {
   constructor(getStuckTasks: () => number) {
     this.#getStuckTasks = getStuckTasks;
     exposeGetters(
-      this, ['healthy', 'sickQueues', 'sickSources', 'stuckTasks', 'maxLatency', 'tasksAcquired'],
+      this,
+      [
+        'healthy', 'sickQueues', 'sickSources', 'stuckTasks', 'maxLatency', 'leaseTransactions',
+        'tasksAcquired'
+      ],
     );
   }
 
@@ -97,6 +148,16 @@ export class FireleaseStats {
 
   get maxLatency() {
     return _(this.queues).map('maxLatency').max() || 0;
+  }
+
+  get leaseTransactions() {
+    return rollUpLeaseTransactions(_.map(this.queues, 'leaseTransactions'));
+  }
+
+  resetLeaseTransactions() {
+    const snapshot = this.leaseTransactions;
+    _.forEach(this.queues, queue => {queue.resetLeaseTransactions();});
+    return snapshot;
   }
 
   get tasksAcquired() {
