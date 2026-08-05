@@ -1,7 +1,7 @@
 import assert from 'node:assert';
 import {test} from 'node:test';
 
-import firelease, {TESTABLES} from '../src';
+import firelease, {TESTABLES, type LeaseTransactionOutcome} from '../src';
 import {asNodeFire, FakeQueueRef, waitFor} from './fake_firebase';
 
 test('lease stats capture acquisitions and contention through the hierarchy', async () => {
@@ -10,11 +10,23 @@ test('lease stats capture acquisitions and contention through the hierarchy', as
     const source = new FakeQueueRef('lease-stats-database', 'queues/jobs');
     source.transactionTries = 3;
     source.transactionDuration = 25;
+    const capturedMetrics: [LeaseTransactionOutcome, number, number][] = [];
+    const capturedErrors: Error[] = [];
+    firelease.settings.captureError = error => {capturedErrors.push(error);};
     let workerCalls = 0;
-    firelease.attachWorker(asNodeFire(source), item => {
-      workerCalls++;
-      assert.strictEqual(item.payload, 'acquired');
-    });
+    firelease.attachWorker(
+      asNodeFire(source),
+      {
+        captureLeaseTransactionMetrics: (outcome, tries, duration) => {
+          capturedMetrics.push([outcome, tries, duration]);
+          if (outcome === 'acquired') throw new Error('Metric capture failed');
+        }
+      },
+      item => {
+        workerCalls++;
+        assert.strictEqual(item.payload, 'acquired');
+      }
+    );
     const queueStats = firelease.stats.queues[firelease.stats.queues.length - 1];
     const sourceStats = queueStats.sources[0];
 
@@ -30,8 +42,23 @@ test('lease stats capture acquisitions and contention through the hierarchy', as
     source.addTask('contended', {payload: 'contended'});
     await waitFor(() => sourceStats.leaseTransactions.contended === 1);
 
+    source.transactionTries = 4;
+    source.transactionDuration = 50;
+    source.transactionError = new Error('Lease transaction failed');
+    source.addTask('failed', {payload: 'failed'});
+    await waitFor(() => capturedMetrics.length === 3);
+
     const expected = {acquired: 1, contended: 1, tries: 5, duration: 35};
     assert.strictEqual(workerCalls, 1);
+    assert.deepStrictEqual(capturedMetrics, [
+      ['acquired', 3, 25],
+      ['contended', 2, 10],
+      ['failed', 4, 50]
+    ]);
+    assert.deepStrictEqual(
+      capturedErrors.map(error => error.message),
+      ['Metric capture failed', 'Lease transaction failed'],
+    );
     assert.deepStrictEqual(sourceStats.leaseTransactions, expected);
     assert.deepStrictEqual(queueStats.leaseTransactions, expected);
     assert.deepStrictEqual(firelease.stats.leaseTransactions, expected);

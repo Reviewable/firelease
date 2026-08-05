@@ -48,6 +48,11 @@ paths concurrently.
     clean up items written to a queue by a process outside your control (e.g., webhooks).
   * `healthyPingLatency: {number | string}` the maximum response latency to pings that is considered
     "healthy" for this queue.
+  * `captureLeaseTransactionMetrics: {function(string, number, number)}` a callback invoked after
+    each acquired, contended, or failed task lease transaction.  It receives the acquisition
+    outcome, NodeFire transaction tries, and transaction duration in milliseconds.  Missing optional
+    NodeFire metadata is reported as zero.  Callback errors are reported through
+    `settings.captureError` and do not affect task processing.
 
 * `@param {function(Object):RETRY | number | string | undefined}` worker The worker function that
   handles enqueued tasks.  It will be given a task object as argument, with a special $ref attribute

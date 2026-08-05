@@ -1,10 +1,10 @@
 import NodeFire from 'nodefire';
 import firelease, {
   RETRY, TESTABLES, attachWorker, blacklist, defaults, extendLease, listTasksInProgress, pingQueues,
-  settings, shutdown, type Duration, type FireleaseApi, type FireleaseError,
-  type FireleaseErrorDetails, type FireleaseErrorLevel, type FireleaseSettings,
+  settings, shutdown, type CaptureLeaseTransactionMetrics, type Duration, type FireleaseApi,
+  type FireleaseError, type FireleaseErrorDetails, type FireleaseErrorLevel, type FireleaseSettings,
   type FireleaseStats, type Lease, type LeaseItem, type LeaseTransactionStats, type PingReport,
-  type QueueOptions,
+  type LeaseTransactionOutcome, type QueueOptions,
   type QueueMode, type QueueRef, type QueueSourceMode, type QueueSourceStats, type QueueStats,
   type RetryDirective, type Worker, type WorkerItem, type WorkerResult
 } from '../src';
@@ -16,6 +16,7 @@ declare const generatorWorker: () => Generator<unknown, void, unknown>;
 declare const lease: Lease;
 declare const leaseItem: LeaseItem;
 declare const leaseTransactionStats: LeaseTransactionStats;
+declare const leaseTransactionOutcome: LeaseTransactionOutcome;
 declare const workerItem: WorkerItem;
 declare const fireleaseError: FireleaseError;
 declare const pingReport: PingReport;
@@ -35,18 +36,23 @@ declare const worker: Worker;
 declare const workerResult: WorkerResult;
 declare const api: FireleaseApi;
 void [
-  lease, leaseItem, leaseTransactionStats, workerItem, fireleaseError, pingReport, queueOptions,
-  duration, errorDetails, errorLevel, fireleaseSettings, fireleaseStats, queueStats,
-  queueSourceStats, queueMode,
+  lease, leaseItem, leaseTransactionStats, leaseTransactionOutcome, workerItem, fireleaseError,
+  pingReport, queueOptions, duration, errorDetails, errorLevel, fireleaseSettings, fireleaseStats,
+  queueStats, queueSourceStats, queueMode,
   queueSourceMode,
   queue, retry, worker, workerResult, api
 ];
 const namedDefaults: QueueOptions = defaults;
 const namedRetry: RetryDirective = RETRY;
 const namedSettings: FireleaseSettings = settings;
+const captureLeaseTransactionMetrics: CaptureLeaseTransactionMetrics = (
+  outcome, tries, transactionDuration
+) => {
+  void [outcome, tries, transactionDuration];
+};
 void [
   TESTABLES, attachWorker, blacklist, extendLease, listTasksInProgress, pingQueues, shutdown,
-  namedDefaults, namedRetry, namedSettings
+  namedDefaults, namedRetry, namedSettings, captureLeaseTransactionMetrics
 ];
 TESTABLES.resetBetweenTests();
 
@@ -63,7 +69,12 @@ firelease.attachWorker(queueRef, item => {
 
 firelease.attachWorker(
   [queueRef],
-  {bufferSize: Infinity, minLease: '30s', preprocess: item => item},
+  {
+    bufferSize: Infinity,
+    minLease: '30s',
+    preprocess: item => item,
+    captureLeaseTransactionMetrics
+  },
   async item => {await firelease.extendLease(item, '1m');}
 );
 

@@ -69,6 +69,11 @@ export interface FireleaseError extends Error {
   level?: FireleaseErrorLevel;
 }
 
+export type LeaseTransactionOutcome = 'acquired' | 'contended' | 'failed';
+export type CaptureLeaseTransactionMetrics = (
+  outcome: LeaseTransactionOutcome, tries: number, duration: number
+) => void;
+
 export interface QueueOptions {
   maxConcurrent?: number;
   bufferSize?: number;
@@ -76,6 +81,7 @@ export interface QueueOptions {
   maxLease?: Duration;
   healthyPingLatency?: Duration;
   preprocess?: (item: LeaseItem) => LeaseItem;
+  captureLeaseTransactionMetrics?: CaptureLeaseTransactionMetrics;
 }
 
 export type PingReport = FireleaseStats;
@@ -121,6 +127,7 @@ interface NormalizedQueueOptions {
   maxLease: number;
   healthyPingLatency: number;
   preprocess?: (item: LeaseItem) => LeaseItem;
+  captureLeaseTransactionMetrics?: CaptureLeaseTransactionMetrics;
 }
 
 const queues: Queue[] = [];
@@ -290,17 +297,22 @@ class Task {
       item._lease.busy = true;
       return this.queue.callPreprocess(item);
     }, {detectStuck: 5, prefetchValue: false, timeout: ms('15s')});
+    let transactionCompleted = false;
     try {
       const item = await transactionPromise;
+      transactionCompleted = true;
       if (acquired && item !== null && this.ref.key !== PING_KEY) {
-        if (!_.isObject(item)) throw new Error(`item not an object: ${item}`);
         this.recordLeaseTransaction('acquired', transactionPromise.transaction);
+        if (!_.isObject(item)) throw new Error(`item not an object: ${item}`);
         this.queue.stats.tasksAcquired++;
         await this.run(item as WorkerItem, startTimestamp);
       } else if (contended) {
         this.recordLeaseTransaction('contended', transactionPromise.transaction);
       }
     } catch (error) {
+      if (!transactionCompleted && this.ref.key !== PING_KEY) {
+        this.recordLeaseTransaction('failed', transactionPromise.transaction);
+      }
       reschedule = false;
       // Hardcoded retry -- hard to do anything smarter, since we failed to update the task in
       // Firebase.
@@ -322,12 +334,24 @@ class Task {
   }
 
   recordLeaseTransaction(
-    outcome: 'acquired' | 'contended', transaction: TransactionMetadata
+    outcome: LeaseTransactionOutcome, transaction: TransactionMetadata
   ) {
-    const leaseStats = this.source.stats.leaseTransactions;
-    leaseStats[outcome] += 1;
-    leaseStats.tries += transaction.tries ?? 0;
-    leaseStats.duration += transaction.duration ?? 0;
+    const tries = transaction.tries ?? 0;
+    const transactionDuration = transaction.duration ?? 0;
+    if (outcome !== 'failed') {
+      const leaseStats = this.source.stats.leaseTransactions;
+      leaseStats[outcome] += 1;
+      leaseStats.tries += tries;
+      leaseStats.duration += transactionDuration;
+    }
+    try {
+      this.queue.options.captureLeaseTransactionMetrics?.(outcome, tries, transactionDuration);
+    } catch (error) {
+      error.firelease = _.assign(error.firelease ?? {}, {
+        itemKey: this.key, phase: 'lease-metric'
+      });
+      settings.captureError(error);
+    }
   }
 
   async run(item: WorkerItem, startTimestamp: number) {
@@ -888,7 +912,7 @@ class QueueSource {
   }
 
   recordPingResult(startedAt: number, succeeded: boolean) {
-    const latency = performance.now() - startedAt;
+    const latency = Math.round(performance.now() - startedAt);
     this.stats.latency = latency;
     this.stats.healthy = succeeded && latency < this.queue.options.healthyPingLatency;
     this.stats.pingTimestamp = Date.now();
@@ -1084,6 +1108,9 @@ class Queue {
  *          control (e.g., webhooks).
  *        healthyPingLatency: {number | string} the maximum response latency to pings that is
  *          considered "healthy" for this queue.
+ *        captureLeaseTransactionMetrics: {function(string, number, number)} a callback invoked
+ *          after each acquired, contended, or failed task lease transaction with its outcome,
+ *          NodeFire transaction tries, and duration in milliseconds.
  * @param {function(Object):RETRY | number | string | undefined} worker The worker function that
  *        handles enqueued tasks.  It will be given a task object as argument, with a special $ref
  *        attribute set to the Nodefire ref of that task.  The worker can perform arbitrary
