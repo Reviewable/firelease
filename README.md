@@ -143,9 +143,11 @@ Mutable default option values for all subsequent attachWorker calls.  See that f
 
 The live stats object also passed to the ping callback.  Global fields include `healthy`,
 `sickQueues`, `sickSources`, `stuckTasks`, `maxLatency`, and `tasksAcquired`.  Each entry in `queues`
-includes its own health, latency, acquisition count, and all physical `sources`.  Source stats
-include `connected`, current `mode` (`full` or `safe`), last known `size`, `sizeTimestamp` when the
-size came from a shallow REST check, `sizeDelta` when the safe listener was below its limit (the
-REST count minus its buffered task count), and ping health and latency.  Queue size is reported only
-for adaptive sources; it remains `null` for sources with an explicit finite `bufferSize` because a
-limited listener cannot determine the true queue size.
+includes its own health, latency, acquisition count, and all physical `sources`.  Queue-level
+`size` and `sizeDelta` sum their source values when all are known, `sizeTimestamp` is the oldest
+source timestamp, and `mode` is `full`, `safe`, or `mixed`.  Source stats include `connected`,
+current `mode` (`full` or `safe`), last known `size`, `sizeTimestamp` when the size came from a
+shallow REST check, `sizeDelta` when the safe listener was below its limit (the REST count minus its
+buffered task count), and ping health and latency.  Queue size is reported only for adaptive
+sources; it remains `null` for sources with an explicit finite `bufferSize` because a limited
+listener cannot determine the true queue size.

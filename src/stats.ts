@@ -1,6 +1,7 @@
 import _ from 'lodash';
 
 export type QueueSourceMode = 'full' | 'safe';
+export type QueueMode = QueueSourceMode | 'mixed';
 
 function exposeGetters(instance: object, properties: string[]) {
   const prototype = Object.getPrototypeOf(instance);
@@ -31,7 +32,26 @@ export class QueueStats {
     readonly key: string | null,
     readonly sources: QueueSourceStats[]
   ) {
-    exposeGetters(this, ['healthy', 'maxLatency']);
+    exposeGetters(this, ['mode', 'size', 'sizeDelta', 'sizeTimestamp', 'healthy', 'maxLatency']);
+  }
+
+  get mode(): QueueMode {
+    const modes = _.uniq(_.map(this.sources, 'mode'));
+    return modes.length === 1 ? modes[0] : 'mixed';
+  }
+
+  get size() {
+    const sizes = _.map(this.sources, 'size');
+    return _.every(sizes, _.isNumber) ? _.sum(sizes) : null;
+  }
+
+  get sizeDelta() {
+    const deltas = _.map(this.sources, 'sizeDelta');
+    return _.every(deltas, _.isNumber) ? _.sum(deltas) : undefined;
+  }
+
+  get sizeTimestamp() {
+    return _(this.sources).map('sizeTimestamp').filter(_.isNumber).min();
   }
 
   get healthy() {
@@ -50,8 +70,7 @@ export class FireleaseStats {
   constructor(getStuckTasks: () => number) {
     this.#getStuckTasks = getStuckTasks;
     exposeGetters(
-      this,
-      ['healthy', 'sickQueues', 'sickSources', 'stuckTasks', 'maxLatency', 'tasksAcquired'],
+      this, ['healthy', 'sickQueues', 'sickSources', 'stuckTasks', 'maxLatency', 'tasksAcquired'],
     );
   }
 

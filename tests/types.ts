@@ -4,7 +4,7 @@ import firelease, {
   settings, shutdown, type Duration, type FireleaseApi, type FireleaseError,
   type FireleaseErrorDetails, type FireleaseErrorLevel, type FireleaseSettings,
   type FireleaseStats, type Lease, type LeaseItem, type PingReport, type QueueOptions,
-  type QueueRef, type QueueSourceMode, type QueueSourceStats, type QueueStats,
+  type QueueMode, type QueueRef, type QueueSourceMode, type QueueSourceStats, type QueueStats,
   type RetryDirective, type Worker, type WorkerItem, type WorkerResult
 } from '../src';
 
@@ -25,6 +25,7 @@ declare const fireleaseSettings: FireleaseSettings;
 declare const fireleaseStats: FireleaseStats;
 declare const queueStats: QueueStats;
 declare const queueSourceStats: QueueSourceStats;
+declare const queueMode: QueueMode;
 declare const queueSourceMode: QueueSourceMode;
 declare const queue: QueueRef;
 declare const retry: RetryDirective;
@@ -33,7 +34,8 @@ declare const workerResult: WorkerResult;
 declare const api: FireleaseApi;
 void [
   lease, leaseItem, workerItem, fireleaseError, pingReport, queueOptions, duration, errorDetails,
-  errorLevel, fireleaseSettings, fireleaseStats, queueStats, queueSourceStats, queueSourceMode,
+  errorLevel, fireleaseSettings, fireleaseStats, queueStats, queueSourceStats, queueMode,
+  queueSourceMode,
   queue, retry, worker, workerResult, api
 ];
 const namedDefaults: QueueOptions = defaults;
@@ -85,6 +87,10 @@ firelease.settings.queueLoadTimeout = '1m';
 firelease.settings.captureError = error => {void error.firelease;};
 const currentStats: FireleaseStats = firelease.stats;
 const sizeDelta: number | undefined = queueSourceStats.sizeDelta;
+const aggregateMode: QueueMode = queueStats.mode;
+const aggregateSize: number | null = queueStats.size;
+const aggregateSizeDelta: number | undefined = queueStats.sizeDelta;
+const aggregateSizeTimestamp: number | undefined = queueStats.sizeTimestamp;
 // @ts-expect-error Mutable settings are nested under `settings`.
 firelease.globalMaxConcurrent = 10;
 // @ts-expect-error Mutable settings are nested under `settings`.
@@ -92,4 +98,7 @@ firelease.captureError = () => undefined;
 const shutdownPromise: Promise<void> = firelease.shutdown();
 const taskUrls: string[] = firelease.listTasksInProgress();
 void shutdownPromise;
-void [taskUrls, currentStats, sizeDelta];
+void [
+  taskUrls, currentStats, sizeDelta, aggregateMode, aggregateSize, aggregateSizeDelta,
+  aggregateSizeTimestamp
+];
