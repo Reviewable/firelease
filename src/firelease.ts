@@ -2,9 +2,18 @@ import _ from 'lodash';
 import ms from 'ms';
 import NodeFire from 'nodefire';
 import * as timers from 'safe-timers';
+import {
+  FireleaseStats, QueueSourceStats, QueueStats, type QueueSourceMode
+} from './stats';
+
+export const TESTABLES = {resetBetweenTests, waitUntilDeleted};
 
 const PING_INTERVAL = ms('1m');
 const PING_KEY = 'ping';
+const QUEUE_CHECK_TIMEOUT = ms('15s');
+const QUEUE_SIZE_HYSTERESIS = 0.15;
+const QUEUE_SIZE_MISMATCH_THRESHOLD = 100;
+const DEMOTION_JITTER = ms('30s');
 
 declare const RETRY_DIRECTIVE: unique symbol;
 
@@ -38,11 +47,21 @@ export interface WorkerItem extends LeaseItem {
 export type FireleaseErrorLevel = 'fatal' | 'error' | 'warning' | 'log' | 'info' | 'debug';
 
 export interface FireleaseErrorDetails {
+  cause?: string;
   code?: string;
+  count?: number;
+  delta?: number;
+  description?: string;
   itemKey?: string;
+  listenerLimit?: number;
+  liveCount?: number;
+  mode?: QueueSourceMode;
   phase?: string;
   queue?: string;
+  reason?: string;
+  source?: string;
   timeNeeded?: Duration;
+  timeout?: Duration;
 }
 
 export interface FireleaseError extends Error {
@@ -59,14 +78,7 @@ export interface QueueOptions {
   preprocess?: (item: LeaseItem) => LeaseItem;
 }
 
-export interface PingReport {
-  healthy: boolean;
-  sickQueues: (string | null)[];
-  sickSources: string[];
-  stuckTasks: number;
-  maxLatency: number;
-  tasksAcquired: number;
-}
+export type PingReport = FireleaseStats;
 
 export type QueueRef = NodeFire | NodeFire[];
 export type WorkerResult = RetryDirective | Duration | Lease | null | void |
@@ -75,6 +87,9 @@ export type Worker = (item: WorkerItem) => WorkerResult | PromiseLike<WorkerResu
 
 export interface FireleaseSettings {
   globalMaxConcurrent: number;
+  safeQueueSize: number;
+  queueCheckInterval: Duration;
+  queueLoadTimeout: Duration;
   captureError: (error: FireleaseError) => void;
 }
 
@@ -82,6 +97,7 @@ export interface FireleaseApi {
   readonly RETRY: RetryDirective;
   readonly settings: FireleaseSettings;
   readonly defaults: QueueOptions;
+  readonly stats: FireleaseStats;
   attachWorker: {
     (refOrRefs: QueueRef, worker: Worker): void;
     (refOrRefs: QueueRef, options: QueueOptions, worker: Worker): void;
@@ -107,28 +123,19 @@ interface NormalizedQueueOptions {
   preprocess?: (item: LeaseItem) => LeaseItem;
 }
 
-interface SourcePingResult {
-  source: QueueSource;
-  latency: number;
-  healthy: boolean;
-}
-
-interface QueuePingResult {
-  queue: Queue;
-  latency: number;
-  healthy: boolean;
-  sickSources: QueueSource[];
-  tasksAcquired: number;
-}
-
 const queues: Queue[] = [];
 const tasks: Record<string, Task> = {};
 const blacklistedTaskKeys = new Set<string>();
 let globalMaxConcurrent = Number.MAX_VALUE;
 let globalNumConcurrent = 0;
+let safeQueueSize = 6000;
+let queueCheckInterval = ms('5m');
+let queueLoadTimeout = ms('1m');
 let shutdownResolve: (() => void) | undefined;
 let shutdownReject: ((error: Error) => void) | undefined;
 let shutdownPromise: Promise<void> | undefined;
+
+const defaultCaptureError = (error: FireleaseError) => {console.error(error.stack);};
 
 /**
  * Return this from a worker to retry after the current lease expires, and to reset the lease
@@ -138,9 +145,11 @@ export const RETRY = {} as RetryDirective;
 
 /** Default option values for all subsequent attachWorker calls. */
 export const defaults: QueueOptions = {
-  maxConcurrent: Number.MAX_VALUE, bufferSize: 5, minLease: '30s', maxLease: '1h',
+  maxConcurrent: Number.MAX_VALUE, bufferSize: Infinity, minLease: '30s', maxLease: '1h',
   healthyPingLatency: '1.5s'
 };
+
+export const stats = new FireleaseStats(() => blacklistedTaskKeys.size);
 
 const scanAll = _.debounce(() => {
   _.forEach(tasks, task => {
@@ -160,13 +169,43 @@ export const settings: FireleaseSettings = {
       scanAll();
     }
   },
-  captureError: error => {console.error(error.stack);}
+  get safeQueueSize() {
+    return safeQueueSize;
+  },
+  set safeQueueSize(value: number) {
+    if (!Number.isFinite(value) || value < 1) {
+      throw new Error('safeQueueSize must be a positive finite number');
+    }
+    safeQueueSize = Math.floor(value);
+  },
+  get queueCheckInterval() {
+    return queueCheckInterval;
+  },
+  set queueCheckInterval(value: Duration) {
+    const normalizedValue = duration(value);
+    if (!Number.isFinite(normalizedValue) || normalizedValue <= 0) {
+      throw new Error('queueCheckInterval must be a positive finite duration');
+    }
+    queueCheckInterval = normalizedValue;
+  },
+  get queueLoadTimeout() {
+    return queueLoadTimeout;
+  },
+  set queueLoadTimeout(value: Duration) {
+    const normalizedValue = duration(value);
+    if (!Number.isFinite(normalizedValue) || normalizedValue <= 0) {
+      throw new Error('queueLoadTimeout must be a positive finite duration');
+    }
+    queueLoadTimeout = normalizedValue;
+  },
+  captureError: defaultCaptureError
 };
 
 const firelease = Object.freeze({
   RETRY,
   settings,
   defaults,
+  stats,
   attachWorker,
   pingQueues,
   extendLease,
@@ -222,6 +261,7 @@ class Task {
   async process() {
     let startTimestamp = 0;
     let acquired = false;
+    let reschedule = true;
     this.working = true;
     this.phase = 'lease';
     const transactionPromise = this.ref.transaction(itemValue => {
@@ -251,10 +291,11 @@ class Task {
       const item = await transactionPromise;
       if (acquired && item !== null && this.ref.key !== PING_KEY) {
         if (!_.isObject(item)) throw new Error(`item not an object: ${item}`);
-        this.queue.tasksAcquired++;
+        this.queue.stats.tasksAcquired++;
         await this.run(item as WorkerItem, startTimestamp);
       }
     } catch (error) {
+      reschedule = false;
       // Hardcoded retry -- hard to do anything smarter, since we failed to update the task in
       // Firebase.
       this.expiry = 0;
@@ -267,6 +308,11 @@ class Task {
     }
     this.working = false;
     this.phase = this.removed ? 'done' : 'retry';
+    if (!this.removed && reschedule) {
+      // Wait until Queue.process() releases this task's concurrency slot before re-arming its
+      // lease-expiry timer.  Listener swaps can replay the task while it is still working.
+      timers.setTimeout(() => {void this.queue.process(this);}, 0);
+    }
   }
 
   async run(item: WorkerItem, startTimestamp: number) {
@@ -365,110 +411,504 @@ class Task {
 }
 
 
-class QueueSource {
-  topRef?: NodeFire;
-  mode: 'initial' | 'normal' | 'failed' | 'failsafe' | 'recovery' = 'initial';
-  epoch = 0;
-  connected = false;
+interface QueueCheckJob {
+  source: QueueSource;
+  epoch: number;
+  description: string;
+  run: () => Promise<void>;
+  resolve: () => void;
+}
 
-  constructor(readonly queue: Queue, readonly ref: NodeFire) {}
+type QueueLoadResult = 'loaded' | 'stopped' | 'timed-out';
 
-  start() {
-    this.listen();
+class QueueCheckQueue {
+  jobs: QueueCheckJob[] = [];
+  active?: QueueCheckJob;
+  draining = false;
+  previousDuration = 0;
+  previousFinishedAt = 0;
 
-    this.ref.root.child('.info/connected').on('value', snap => {
-      const connected = Boolean(snap.val());
-      if (this.connected === connected) return;
-      this.connected = connected;
-      if (this.connected) {
-        // On reconnection, rescan all tasks but give Firebase a few seconds to resync values from
-        // the server.
-        _.delay(() => {
-          if (!this.connected) return;
-          this.queue.scan();
-        }, ms('5s'));
-      } else {
-        this.epoch += 1;
-        const failed =
-          (this.mode === 'initial' || this.mode === 'recovery') &&
-          !_.some(queues, queue => _.some(
-            queue.sources,
-            source => source.mode === 'failed' && source.ref.root.isEqual(this.ref.root)));
-        if (failed) {
-          if (this.mode === 'initial') {
-            console.log(`Queue worker ${this.ref} failed to load tasks, entering failsafe mode`);
-            settings.captureError(_.assign(
-              new Error('Queue worker entering failsafe mode'),
-              {extra: {queue: this.ref.toString()}}));
-          }
-          this.mode = 'failed';
-          _.defer(() => {this.mode = 'failsafe';});
-          this.listen(true);
-          _.delay(() => {
-            if (this.mode !== 'failsafe') return;
-            this.mode = 'recovery';
-            this.listen();
-          }, _.random(ms('1m'), ms('2m')));
-        } else {
-          this.mode = 'initial';
-          this.listen();
-        }
-      }
+  enqueue(source: QueueSource, description: string, epoch: number, run: () => Promise<void>) {
+    const duplicate =
+      (this.active?.source === source && this.active.epoch === epoch) ||
+      // Match shorthand would deep-compare QueueSource, but identity is required here.
+      // eslint-disable-next-line lodash/matches-shorthand
+      _.some(this.jobs, job => job.source === source && job.epoch === epoch);
+    if (duplicate) {
+      source.reportError(
+        'queue-check-coalesced', 'Firelease queue check coalesced', 'warning', {description});
+      return Promise.resolve();
+    }
+    return new Promise<void>(resolve => {
+      this.jobs.push({source, epoch, description, run, resolve});
+      void this.drain();
     });
   }
 
-  listen(failsafe = false) {
-    if (this.topRef) {
-      this.topRef.off('child_added', this.addTask, this);
-      this.topRef.off('child_removed', this.removeTask, this);
-      this.topRef.off(
-        this.topRef === this.ref ? 'child_changed' : 'child_moved', this.addTask, this);
-      _.forEach(tasks, (task, taskKey) => {
-        if (task.source === this) this.removeTask(taskKey);
-      });
-    }
-
-    let bufferSize = this.queue.options.bufferSize;
-    if (failsafe) bufferSize = Math.min(bufferSize, 5);
-    const bufferAll = bufferSize === Infinity;
-    this.topRef =
-      bufferAll ? this.ref : this.ref.orderByChild('_lease/expiry').limitToFirst(bufferSize);
-    this.topRef.on('child_added', this.addTask, this.crash, this);
-    this.topRef.on('child_removed', this.removeTask, this.crash, this);
-    this.topRef.on(bufferAll ? 'child_changed' : 'child_moved', this.addTask, this.crash, this);
-
-    if (!failsafe) {
-      void this.finishLoading(this.epoch);
-    }
+  reset() {
+    _.forEach(this.jobs.splice(0), job => {job.resolve();});
+    this.previousDuration = 0;
+    this.previousFinishedAt = 0;
   }
 
-  async finishLoading(epoch: number) {
-    try {
-      await this.ref.orderByChild('_lease/expiry').limitToFirst(1).get({timeout: ms('10s')});
-      if (this.epoch !== epoch) return;
-      const recovered = this.mode === 'recovery' ? ', exiting failsafe mode' : '';
-      console.log(`Queue worker ${this.ref} loaded tasks${recovered}`);
-      if (this.mode === 'initial' || this.mode === 'recovery') this.mode = 'normal';
-    } catch (error) {
-      if (error.code !== 'timeout') {
-        this.crash(error);
-        return;
+  async drain() {
+    if (this.draining) return;
+    this.draining = true;
+    while (this.jobs.length) {
+      const job = this.jobs.shift()!;
+      try {
+        if (!job.source.isCurrent(job.epoch)) {
+          job.resolve();
+          continue;
+        }
+
+        // Don't exceed a 50% duty cycle.
+        const minimumStart = this.previousFinishedAt + this.previousDuration;
+        const now = performance.now();
+        if (minimumStart > now) {
+          await new Promise<void>(resolve => {
+            timers.setTimeout(resolve, minimumStart - now);
+          });
+        }
+
+        if (!job.source.isCurrent(job.epoch)) {
+          job.resolve();
+          continue;
+        }
+
+        this.active = job;
+        const start = performance.now();
+        try {
+          await job.run();
+        } catch (error) {
+          job.source.crash(
+            'queue-check-failed', 'Firelease queue check failed', error,
+            {description: job.description});
+        } finally {
+          const finishedAt = performance.now();
+          this.previousDuration = finishedAt - start;
+          this.previousFinishedAt = finishedAt;
+          this.active = undefined;
+          job.resolve();
+        }
+
+      } catch (error) {
+        job.source.crash(
+          'queue-check-queue-failed', 'Firelease queue check queue failed', error,
+          {description: job.description});
+        break;
       }
-      if (this.epoch !== epoch) return;
-      console.log(`Queue worker ${this.ref} loading timeout, forcing failsafe mode`);
-      this.ref.database.goOffline();
-      _.defer(() => this.ref.database.goOnline());
+    }
+    this.draining = false;
+  }
+}
+
+const queueCheckQueue = new QueueCheckQueue();
+
+class QueueListener {
+  readonly query: NodeFire;
+  readonly changeEvent: 'child_changed' | 'child_moved';
+  readonly snapshots = new Map<string, LeaseSnapshot>();
+  loaded = false;
+  stopped = false;
+  observers = new Set<(listener: QueueListener) => void>();
+
+  constructor(readonly source: QueueSource, readonly mode: QueueSourceMode) {
+    const limit = source.listenerLimit(mode);
+    this.query =
+      mode === 'full' ? source.ref : source.ref.orderByChild('_lease/expiry').limitToFirst(limit);
+    this.changeEvent = mode === 'full' ? 'child_changed' : 'child_moved';
+    if (source.adaptive && mode === 'full') this.observers.add(source.onListenerSize);
+  }
+
+  start() {
+    this.query.on('child_added', this.onAdd, this.onError);
+    this.query.on('child_removed', this.onRemove, this.onError);
+    this.query.on(this.changeEvent, this.onAdd, this.onError);
+    this.query.on('value', this.onValue, this.onError);
+  }
+
+  readonly onAdd = (snap: LeaseSnapshot) => {
+    this.snapshots.set(Task.makeKey(snap), snap);
+    this.source.addTask(snap);
+    this.notify();
+  };
+
+  readonly onRemove = (snap: LeaseSnapshot) => {
+    this.snapshots.delete(Task.makeKey(snap));
+    this.source.removeTask(snap);
+    this.notify();
+  };
+
+  readonly onValue = () => {
+    if (this.stopped) return;
+    this.loaded = true;
+    this.query.off('value', this.onValue);
+    this.notify();
+  };
+
+  readonly onError = (error: FireleaseError) => {
+    this.source.crash(
+      'queue-listener-failed', 'Firelease queue listener failed', error, {mode: this.mode});
+    this.stop();
+  };
+
+  waitForLoad(timeout: number): Promise<QueueLoadResult> {
+    if (this.loaded) return Promise.resolve('loaded');
+    if (this.stopped) return Promise.resolve('stopped');
+    return new Promise(resolve => {
+      let timeoutHandle: timers.Timeout;  // eslint-disable-line prefer-const
+      const onChange = () => {
+        if (!this.loaded && !this.stopped) return;
+        this.observers.delete(onChange);
+        timeoutHandle?.clear();
+        resolve(this.loaded ? 'loaded' : 'stopped');
+      };
+      this.observers.add(onChange);
+      timeoutHandle = timers.setTimeout(() => {
+        this.observers.delete(onChange);
+        resolve('timed-out');
+      }, timeout);
+    });
+  }
+
+  stop() {
+    if (this.stopped) return;
+    this.stopped = true;
+    this.query.off('child_added', this.onAdd);
+    this.query.off('child_removed', this.onRemove);
+    this.query.off(this.changeEvent, this.onAdd);
+    this.query.off('value', this.onValue);
+    this.observers.delete(this.source.onListenerSize);
+    this.notify();
+  }
+
+  notify() {
+    for (const observer of this.observers) observer(this);
+  }
+}
+
+class QueueSource {
+  mode: QueueSourceMode = 'safe';
+  epoch = 0;
+  connected = false;
+  crashing = false;
+  activeListener?: QueueListener;
+  checkTimer?: timers.Timeout;
+  demotionTimer?: timers.Timeout;
+  exitTimer?: timers.Timeout;
+  promotionNotBeforeTimestamp = 0;
+  initialStartupComplete = false;
+  readonly connectionRef: NodeFire;
+  readonly stats: QueueSourceStats;
+
+  constructor(readonly queue: Queue, readonly ref: NodeFire) {
+    this.connectionRef = this.ref.root.child('.info/connected');
+    this.stats = new QueueSourceStats(ref.toString());
+  }
+
+  get adaptive() {
+    return this.queue.options.bufferSize === Infinity;
+  }
+
+  start() {
+    this.connectionRef.on('value', this.onConnection);
+  }
+
+  readonly onConnection = (snap: LeaseSnapshot) => {
+    const connected = Boolean(snap.val());
+    if (this.connected === connected) return;
+    this.connected = connected;
+    this.stats.connected = connected;
+    this.epoch++;
+    const epoch = this.epoch;
+    this.cancelPendingWork();
+    if (connected) {
+      this.stats.healthy = true;
+      void this.enqueueStartup(epoch);
+    } else {
+      this.activeListener?.stop();
+      this.activeListener = undefined;
+      this.clearTasks();
+      if (this.stats.size !== null && this.stats.sizeTimestamp === undefined) {
+        this.stats.sizeTimestamp = Date.now();
+      }
+      this.stats.healthy = false;
+    }
+  };
+
+  reset() {
+    this.connectionRef.off('value', this.onConnection);
+    this.connected = false;
+    this.epoch++;
+    this.cancelPendingWork();
+    this.exitTimer?.clear();
+    this.exitTimer = undefined;
+    this.activeListener?.stop();
+    this.activeListener = undefined;
+    this.clearTasks();
+  }
+
+  async enqueueStartup(epoch: number) {
+    await queueCheckQueue.enqueue(this, 'startup', epoch, () => this.initialize(epoch));
+  }
+
+  async initialize(epoch: number) {
+    try {
+      let targetMode: QueueSourceMode = 'safe';
+      if (this.adaptive) {
+        const count = await this.probeSize('startup');
+        if (!this.isCurrent(epoch)) return;
+        targetMode = count !== null && count < fullQueueSize() ? 'full' : 'safe';
+      }
+      const loadedMode = await this.loadListener(targetMode, epoch, 'startup');
+      if (!loadedMode) return;
+      const loadedTaskCount = this.activeListener?.snapshots.size ?? 0;
+      console.log(`Queue worker ${this.ref} loaded ${loadedTaskCount} tasks in ${loadedMode} mode`);
+      if (loadedMode === 'safe') this.scheduleSafeCheck();
+      this.initialStartupComplete = true;
+    } catch (e) {
+      if (this.initialStartupComplete) throw e;
+      this.crash(
+        'queue-startup-failed', 'Firelease queue startup failed', e,
+        {description: 'startup'});
     }
   }
 
-  crash(error: FireleaseError) {
-    console.log(`Queue worker ${this.ref} interrupted:`, error.message);
-    error.firelease =
-      _.assign(error.firelease ?? {}, {queue: this.ref.toString(), phase: 'crashing'});
+  isCurrent(epoch: number) {
+    return !this.crashing && this.connected && this.epoch === epoch;
+  }
+
+  listenerLimit(mode: QueueSourceMode) {
+    if (mode === 'full') return Infinity;
+    const limit = this.adaptive ? settings.safeQueueSize : this.queue.options.bufferSize;
+    return Math.max(1, Math.floor(limit));
+  }
+
+  async probeSize(reason: string) {
+    try {
+      const keys = await this.ref.childrenKeys({timeout: QUEUE_CHECK_TIMEOUT});
+      this.stats.size = keys.length;
+      delete this.stats.sizeDelta;
+      this.stats.sizeTimestamp = Date.now();
+      return keys.length;
+    } catch (error) {
+      this.reportError(
+        'queue-count-failed', 'Firelease queue count failed', 'warning',
+        {cause: error.message, reason});
+      return null;
+    }
+  }
+
+  scheduleSafeCheck() {
+    this.checkTimer?.clear();
+    if (!(this.adaptive && this.connected && this.mode === 'safe')) return;
+    const interval = queueCheckInterval;
+    const jitteredInterval = Math.max(0, Math.round(interval * (0.95 + Math.random() * 0.1)));
+    const epoch = this.epoch;
+    this.checkTimer = timers.setTimeout(() => {
+      this.checkTimer = undefined;
+      this.scheduleSafeCheck();
+      void queueCheckQueue.enqueue(
+        this, 'scheduled shallow count', epoch, () => this.runScheduledCheck(epoch));
+    }, jitteredInterval);
+  }
+
+  async runScheduledCheck(epoch: number) {
+    if (!this.isCurrent(epoch) || this.mode !== 'safe') return;
+    const count = await this.probeSize('scheduled');
+    if (!this.isCurrent(epoch) || count === null || this.mode !== 'safe') return;
+    const liveCount = this.activeListener?.snapshots.size ?? 0;
+    const listenerLimit = this.listenerLimit('safe');
+    const delta = count - liveCount;
+    if (liveCount < listenerLimit) this.stats.sizeDelta = delta;
+    else delete this.stats.sizeDelta;
+    if (this.stats.sizeDelta !== undefined && delta >= QUEUE_SIZE_MISMATCH_THRESHOLD) {
+      this.reportError(
+        'safe-queue-size-mismatch', 'Firelease safe queue size mismatch', 'error',
+        {count, delta, listenerLimit, liveCount});
+    }
+    if (count < fullQueueSize() && performance.now() >= this.promotionNotBeforeTimestamp) {
+      await this.promote(epoch);
+    }
+  }
+
+  async promote(epoch: number) {
+    if (!this.isCurrent(epoch) || this.mode !== 'safe') return;
+    const loadedMode = await this.loadListener('full', epoch, 'promotion');
+    if (!loadedMode) return;
+    if (loadedMode === 'safe') {
+      this.scheduleSafeCheck();
+      return;
+    }
+    console.log(
+      `Queue worker ${this.ref} promoted to full mode with` +
+        ` ${this.activeListener?.snapshots.size ?? 0} tasks`);
+  }
+
+  scheduleDemotion() {
+    if (!(this.adaptive && this.connected && this.mode === 'full' && !this.demotionTimer)) return;
+    const epoch = this.epoch;
+    const delay = Math.round(Math.random() * DEMOTION_JITTER);
+    console.log(`Queue worker ${this.ref} scheduling demotion with ${ms(delay)} jitter`);
+    this.demotionTimer = timers.setTimeout(() => {
+      this.demotionTimer = undefined;
+      void queueCheckQueue.enqueue(this, 'live-count demotion', epoch, () => this.demote(epoch));
+    }, delay);
+  }
+
+  async demote(epoch: number) {
+    if (!this.isCurrent(epoch) || this.mode !== 'full' ||
+        (this.activeListener?.snapshots.size ?? 0) <= settings.safeQueueSize) return;
+    const lastFullSize = this.activeListener?.snapshots.size ?? 0;
+    if (!await this.loadListener('safe', epoch, 'demotion')) return;
+    this.stats.size = lastFullSize;
+    delete this.stats.sizeDelta;
+    this.stats.sizeTimestamp = Date.now();
+    console.log(
+      `Queue worker ${this.ref} demoted to safe mode with` +
+        ` ${this.activeListener?.snapshots.size ?? 0} buffered tasks`);
+    this.scheduleSafeCheck();
+  }
+
+  async loadListener(
+    mode: QueueSourceMode, epoch: number, description: string
+  ): Promise<QueueSourceMode | undefined> {
+    let details = {description, mode, timeout: queueLoadTimeout};
+    const result = await this.replaceListener(mode, epoch);
+    if (result === 'loaded') {
+      if (mode === 'full') this.promotionNotBeforeTimestamp = 0;
+      return mode;
+    }
+    if (result === 'stopped') return;
+
+    if (mode === 'full') {
+      this.reportError(
+        'queue-load-timeout', 'Firelease queue load timed out', 'warning', details);
+      this.promotionNotBeforeTimestamp = performance.now() + queueCheckInterval * 3;
+      const fallbackResult = await this.replaceListener('safe', epoch);
+      if (fallbackResult === 'loaded') return 'safe';
+      if (fallbackResult === 'stopped') return;
+      details = {description: `${description} fallback`, mode: 'safe', timeout: queueLoadTimeout};
+    }
+
+    this.crash(
+      'queue-load-timeout', 'Firelease queue load timed out', new Error('timeout'), details);
+  }
+
+  async replaceListener(mode: QueueSourceMode, epoch: number): Promise<QueueLoadResult> {
+    if (!this.isCurrent(epoch)) return 'stopped';
+    this.activeListener?.stop();
+    this.activeListener = undefined;
+    this.clearTasks();
+    if (mode === 'full') {
+      this.checkTimer?.clear();
+      this.checkTimer = undefined;
+    } else {
+      this.demotionTimer?.clear();
+      this.demotionTimer = undefined;
+    }
+    const listener = new QueueListener(this, mode);
+    this.activeListener = listener;
+    listener.start();
+    const result = await listener.waitForLoad(queueLoadTimeout);
+    if (result !== 'loaded' || !this.isCurrent(epoch) || this.activeListener !== listener) {
+      listener.stop();
+      if (this.activeListener === listener) {
+        this.activeListener = undefined;
+        this.clearTasks();
+      }
+      return result === 'timed-out' && this.isCurrent(epoch) ? 'timed-out' : 'stopped';
+    }
+    this.mode = mode;
+    this.stats.mode = mode;
+    listener.notify();
+    return 'loaded';
+  }
+
+  readonly onListenerSize = (listener: QueueListener) => {
+    if (listener !== this.activeListener || !listener.loaded) return;
+    const size = listener.snapshots.size;
+    this.stats.size = size;
+    delete this.stats.sizeDelta;
+    delete this.stats.sizeTimestamp;
+    if (size > settings.safeQueueSize) {
+      this.scheduleDemotion();
+    } else if (this.demotionTimer) {
+      this.demotionTimer.clear();
+      this.demotionTimer = undefined;
+    }
+  };
+
+  cancelPendingWork() {
+    this.checkTimer?.clear();
+    this.checkTimer = undefined;
+    this.demotionTimer?.clear();
+    this.demotionTimer = undefined;
+    this.promotionNotBeforeTimestamp = 0;
+  }
+
+  async checkPing() {
+    const startedAt = performance.now();
+    const timestamp = Date.now();
+    const pingRef = this.ref.child(PING_KEY);
+    let pingFree = false;
+    try {
+      await pingRef.transaction(item => {
+        pingFree = !item;
+        return item ?? {timestamp, _lease: {expiry: NodeFire.SERVER_TIMESTAMP}};
+      }, {prefetchValue: false, timeout: ms('10s')});
+    } catch (error) {
+      this.recordPingResult(startedAt, false);
+      throw error;
+    }
+    if (!pingFree) return;  // another process is currently pinging
+    try {
+      await waitUntilDeleted(pingRef, this.queue.options.healthyPingLatency + ms('10s'));
+    } catch {
+      this.recordPingResult(startedAt, false);
+      return;
+    }
+    this.recordPingResult(startedAt, true);
+  }
+
+  recordPingResult(startedAt: number, succeeded: boolean) {
+    const latency = performance.now() - startedAt;
+    this.stats.latency = latency;
+    this.stats.healthy = succeeded && latency < this.queue.options.healthyPingLatency;
+    this.stats.pingTimestamp = Date.now();
+  }
+
+  reportError(
+    code: string, message: string, level: FireleaseErrorLevel, details: FireleaseErrorDetails = {}
+  ) {
+    const error = new Error(message) as FireleaseError;
+    error.level = level;
+    error.firelease = {
+      ...details, code, phase: 'queue-sizing', queue: this.queue.ref.toString(),
+      source: this.ref.toString()
+    };
+    if (level === 'error') console.error(message, error.firelease);
+    else console.warn(message, error.firelease);
+    settings.captureError(error);
+  }
+
+  crash(
+    code: string, message: string, cause: FireleaseError, details: FireleaseErrorDetails = {}
+  ) {
+    if (this.crashing) return;
+    this.crashing = true;
+    this.cancelPendingWork();
+    const error = new Error(message) as FireleaseError;
+    error.level = 'fatal';
+    error.firelease = {
+      ...details, cause: cause.message, code, phase: 'crashing',
+      queue: this.queue.ref.toString(), source: this.ref.toString()
+    };
+    console.error(message, error.firelease);
     settings.captureError(error);
     // Give the error capture a chance to process before exiting.
-    _.delay(() => {process.exit(1);}, ms('3s'));
-
+    this.exitTimer = timers.setTimeout(() => {process.exit(1);}, ms('3s'));
   }
 
   addTask(snap: LeaseSnapshot) {
@@ -497,6 +937,12 @@ class QueueSource {
     }
     if (!task.working) delete tasks[taskKey];
   }
+
+  clearTasks() {
+    _.forEach(tasks, (task, taskKey) => {
+      if (task.source === this) this.removeTask(taskKey);
+    });
+  }
 }
 
 
@@ -505,9 +951,9 @@ class Queue {
   ref: NodeFire;
   options: NormalizedQueueOptions;
   numConcurrent = 0;
-  tasksAcquired = 0;
   worker: Worker;
   sources: QueueSource[];
+  readonly stats: QueueStats;
 
   constructor(refOrRefs: QueueRef, options: QueueOptions | Worker, worker?: Worker) {
     if (_.isFunction(options)) {
@@ -525,6 +971,8 @@ class Queue {
     this.options = filledOptions as NormalizedQueueOptions;
     this.worker = worker as Worker;
     this.sources = _.map(this.refs, sourceRef => new QueueSource(this, sourceRef));
+    this.stats = new QueueStats(this.ref.toString(), this.ref.key, _.map(this.sources, 'stats'));
+    stats.queues.push(this.stats);
 
     // Need each queue's scan function to be debounced separately.
     this.scan = _.debounce(this.scan.bind(this), 100);
@@ -532,6 +980,11 @@ class Queue {
 
   start() {
     _.forEach(this.sources, source => {source.start();});
+  }
+
+  reset() {
+    (this.scan as _.DebouncedFunc<Queue['scan']>).cancel();
+    _.forEach(this.sources, source => {source.reset();});
   }
 
   scan() {
@@ -599,9 +1052,12 @@ class Queue {
  * @param {Object} options Optional options, supporting the following values:
  *        maxConcurrent: {number} max number of tasks to handle concurrently for this worker.
  *        bufferSize: {number} upper bound on how many tasks to keep buffered from each source and
- *          potentially go through leasing transactions in parallel.  In principle, it's not worth
- *          setting higher than `maxConcurrent`, but you can set it to `Infinity` to keep the entire
- *          task queue buffered at all times if needed.
+ *          potentially go through leasing transactions in parallel.  It defaults to `Infinity`,
+ *          which is preferred for efficiency and correctness unless the queue will usually remain
+ *          above `settings.safeQueueSize`.  `Infinity` adapts between a full listener and a safe
+ *          listener limited to `settings.safeQueueSize` tasks.  Use a finite value only to keep an
+ *          ordinarily large queue permanently on a limited listener.  An explicit finite value is
+ *          used as-is and may be greater than `settings.safeQueueSize`.
  *        minLease: {number | string} minimum duration of each lease, which should equal the maximum
  *          expected time a worker will take to handle a task.
  *        maxLease: {number | string} maximum duration of each lease; the lease duration is doubled
@@ -646,6 +1102,9 @@ function duration(value: Duration) {
   return ms(value as ms.StringValue);
 }
 
+function fullQueueSize() {
+  return settings.safeQueueSize * (1 - QUEUE_SIZE_HYSTERESIS);
+}
 
 let pinging = false;
 let pingIntervalHandle: timers.Interval | undefined;
@@ -658,11 +1117,10 @@ let pingCallback: ((report: PingReport) => void) | null | undefined;
  *
  * All durations can be specified as either a human-readable string, or a number of milliseconds.
  *
- * @param {Function(Object) | null} callback The callback to invoke with a report each time we ping
- *        all the queues.  The report looks like:
- *        {healthy: true, maxLatency: 1234, sickQueues: [], sickSources: []}.  sickQueues contains
- *        logical queue keys, while sickSources contains the full URLs of unhealthy physical
- *        sources.  If not specified, reports are silently dropped.
+ * @param {Function(Object) | null} callback The callback to invoke with the live `stats` object
+ *        each time we ping all the queues.  It retains the existing global fields and adds
+ *        structured results for every logical queue and physical source.  If not specified,
+ *        reports are silently dropped.
  * @param {number | string} interval The interval at which to ping queues, to both check the
  *        current response latency and make sure no tasks are stuck.  Defaults to 1 minute.
  */
@@ -692,73 +1150,39 @@ async function runPingCheck() {
 async function checkPings() {
   if (pinging) return;
   pinging = true;
-  const results = await Promise.all(_.map(queues, checkQueuePings));
-  const availableResults = _.compact(results) as QueuePingResult[];
-  if (availableResults.length) {
-    // Backup scan in case tasks are stuck on a queue due to bugs.
-    scanAll();
-    if (pingCallback) {
-      const sickQueueKeys =
-        _(availableResults).reject('healthy').map(item => item.queue.ref.key).value();
-      const sickSourceUrls = _(availableResults)
-        .flatMap(result => result.sickSources)
-        .map(source => source.ref.toString())
-        .uniq()
-        .value();
-      pingCallback({
-        healthy: _.every(availableResults, 'healthy'),
-        sickQueues: sickQueueKeys,
-        sickSources: sickSourceUrls,
-        stuckTasks: blacklistedTaskKeys.size,
-        maxLatency: _.max(_.map(availableResults, 'latency'))!,
-        tasksAcquired: _.reduce(availableResults, (sum, result) => sum + result.tasksAcquired, 0)
-      });
-    }
-  }
+  await Promise.all(_(queues)
+    .flatMap(queue => queue.sources)
+    .map(source => source.checkPing())
+    .value());
+  // Backup scan in case tasks are stuck on a queue due to bugs.
+  scanAll();
+  pingCallback?.(stats);
   pinging = false;
-}
-
-async function checkQueuePings(queue: Queue) {
-  const sourceResults = await Promise.all(
-    _.map(queue.sources, source => checkSourcePing(queue, source)));
-  const availableResults = _.compact(sourceResults) as SourcePingResult[];
-  if (!availableResults.length) return null;
-  return {
-    queue,
-    latency: _.max(_.map(availableResults, 'latency'))!,
-    healthy: _.every(availableResults, 'healthy'),
-    sickSources: _(availableResults).reject('healthy').map('source').value(),
-    tasksAcquired: queue.tasksAcquired
-  } as QueuePingResult;
-}
-
-async function checkSourcePing(queue: Queue, source: QueueSource) {
-  const start = Date.now();
-  const pingRef = source.ref.child(PING_KEY);
-  let pingFree = false;
-  await pingRef.transaction(item => {
-    pingFree = !item;
-    return item ?? {timestamp: start, _lease: {expiry: NodeFire.SERVER_TIMESTAMP}};
-  }, {prefetchValue: false, timeout: ms('10s')});
-  if (!pingFree) return null;  // another process is currently pinging
-  try {
-    await waitUntilDeleted(pingRef, queue.options.healthyPingLatency + ms('10s'));
-    const latency = Date.now() - start;
-    return {source, latency, healthy: latency < queue.options.healthyPingLatency};
-  } catch {
-    return {source, latency: Date.now() - start, healthy: false};
-  }
 }
 
 function waitUntilDeleted(ref: NodeFire, timeout: number) {
   return new Promise<void>((resolve, reject) => {
+    let settled = false;
+    let timeoutHandle: timers.Timeout | undefined;  // eslint-disable-line prefer-const
+    function finish(error?: Error) {
+      if (settled) return;
+      settled = true;
+      timeoutHandle?.clear();
+      ref.off('value', onValue);
+      if (error) reject(error);
+      else resolve();
+    }
     function onValue(snap: LeaseSnapshot) {
       if (snap.val()) return;
-      ref.off('value', onValue);
-      resolve();
+      finish();
     }
-    ref.on('value', onValue, reject);
-    if (timeout) timers.setTimeout(() => {reject(new Error('timeout'));}, timeout);
+    timeoutHandle = timeout ?
+      timers.setTimeout(() => {finish(new Error('timeout'));}, timeout) : undefined;
+    try {
+      ref.on('value', onValue, finish);
+    } catch (error) {
+      finish(error);
+    }
   });
 }
 
@@ -874,6 +1298,39 @@ export function shutdown(): Promise<void> {
  */
 export function listTasksInProgress(): string[] {
   return _(tasks).pickBy('working').keys().value();
+}
+
+function resetBetweenTests() {
+  scanAll.cancel();
+  pingIntervalHandle?.clear();
+  pingIntervalHandle = undefined;
+  pingCallback = undefined;
+  pinging = false;
+
+  _.forEach(queues, queue => {queue.reset();});
+  queueCheckQueue.reset();
+  _.forEach(tasks, (task, taskKey) => {
+    task.timeout?.clear();
+    delete tasks[taskKey];
+  });
+  queues.length = 0;
+  stats.queues.length = 0;
+  blacklistedTaskKeys.clear();
+  globalMaxConcurrent = Number.MAX_VALUE;
+  globalNumConcurrent = 0;
+  safeQueueSize = 6000;
+  queueCheckInterval = ms('5m');
+  queueLoadTimeout = ms('1m');
+  shutdownResolve = shutdownReject = shutdownPromise = undefined;
+  delete defaults.preprocess;
+  _.assign(defaults, {
+    maxConcurrent: Number.MAX_VALUE,
+    bufferSize: Infinity,
+    minLease: '30s',
+    maxLease: '1h',
+    healthyPingLatency: '1.5s'
+  });
+  settings.captureError = defaultCaptureError;
 }
 
 export default firelease;

@@ -29,9 +29,15 @@ paths concurrently.
 * `@param {Object} options` Optional options, supporting the following values:
   * `maxConcurrent: {number}` max number of tasks to handle concurrently for this worker.
   * `bufferSize: {number}` upper bound on how many tasks to keep buffered from each source and
-    potentially go through leasing transactions in parallel.  In principle, it's not worth setting
-    higher than `maxConcurrent`, but you can set it to `Infinity` to keep the entire task queue
-    buffered at all times if needed.
+    potentially go through leasing transactions in parallel.  It defaults to `Infinity`, which is
+    preferred for both efficiency and correctness unless you know that the queue will spend most of
+    its time above `settings.safeQueueSize`.  With `Infinity`, Firelease uses adaptive buffering: a
+    shallow REST count chooses between a full listener that loads every task and a safe listener
+    limited to `settings.safeQueueSize` tasks, and the source changes modes as the queue grows and
+    shrinks.  Mode changes stop the old listener before starting its replacement; tasks already in
+    progress keep running.  Set a finite value only for a queue expected to remain large most of the
+    time, to keep it permanently on a limited listener.  An explicit finite value is used as-is and
+    may be greater than `settings.safeQueueSize`, which applies only to adaptive buffers.
   * `minLease: {number | string}` minimum duration of each lease, which should equal the maximum
     expected time a worker will take to handle a task.
   * `maxLease: {number | string}` maximum duration of each lease; the lease duration is doubled each
@@ -64,11 +70,8 @@ paths concurrently.
 Sets up regular pinging of all queues.  Can be called either before or after workers are attached,
 and will always ping all queues.  Can be called more than once to change the parameters.
 
-* `@param {Function(Object) | null} callback` The callback to invoke with a report each time we ping
-  all the queues.  The report looks like:
-  `{healthy: true, maxLatency: 1234, sickQueues: [], sickSources: []}`.  `sickQueues` contains
-  logical queue keys, while `sickSources` contains the full URLs of unhealthy physical sources.  If
-  not specified, reports are silently dropped.
+* `@param {Function(Object) | null} callback` The callback to invoke with `firelease.stats` each
+  time we ping all the queues.  If not specified, reports are silently dropped.
 
 * `@param {number | string} interval` The interval at which to ping queues, to both check the
   current response latency and make sure no tasks are stuck.  Defaults to 1 minute.
@@ -111,6 +114,23 @@ The module also exports a mutable `settings` object:
 
 Set this to the maximum number of concurrent tasks being executed at any moment across all queues.
 
+```settings.safeQueueSize: {number}```
+
+The maximum number of tasks loaded by an adaptive safe-mode listener.  Defaults to 6,000.  Adaptive
+sources enter full mode only below `safeQueueSize * 0.85` and demote from full mode above
+`safeQueueSize`.  Configure this before attaching workers.
+
+```settings.queueCheckInterval: {number | string}```
+
+How often safe-mode sources enqueue a shallow REST count check, with 5% random jitter.  Defaults to
+5 minutes.
+
+```settings.queueLoadTimeout: {number | string}```
+
+How long Firelease waits for a queue listener's initial value before treating the load as stalled.
+Defaults to 1 minute.  A stalled full-mode load falls back to safe mode; a stalled safe-mode load
+is fatal because no bounded listener is available to process the queue.
+
 ```settings.captureError: {function(Error)}```
 
 A function used to capture errors.  Defaults to logging the stack to the console, but you may want to change it to something else in production.  The function should take a single exception argument.
@@ -118,3 +138,16 @@ A function used to capture errors.  Defaults to logging the stack to the console
 ```defaults: {Object}```
 
 Mutable default option values for all subsequent attachWorker calls.  See that function for details.
+
+```stats: {Object}```
+
+The live stats object also passed to the ping callback.  Global fields include `healthy`,
+`sickQueues`, `sickSources`, `stuckTasks`, `maxLatency`, and `tasksAcquired`.  Each entry in `queues`
+includes its own health, latency, acquisition count, and all physical `sources`.  Queue-level
+`size` and `sizeDelta` sum their source values when all are known, `sizeTimestamp` is the oldest
+source timestamp, and `mode` is `full`, `safe`, or `mixed`.  Source stats include `connected`,
+current `mode` (`full` or `safe`), last known `size`, `sizeTimestamp` when the size came from a
+shallow REST check, `sizeDelta` when the safe listener was below its limit (the REST count minus its
+buffered task count), and ping health and latency.  Queue size is reported only for adaptive
+sources; it remains `null` for sources with an explicit finite `bufferSize` because a limited
+listener cannot determine the true queue size.

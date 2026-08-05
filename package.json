@@ -1,6 +1,6 @@
 {
   "name": "firelease",
-  "version": "4.0.0",
+  "version": "4.1.0",
   "packageManager": "yarn@4.13.0",
   "description": "Firebase queue consumer for Node with at-least-once semantics",
   "main": "built/index.js",
@@ -15,7 +15,7 @@
     "lint": "eslint src/*.ts tests/*.ts",
     "check-types": "tsc --noEmit --skipLibCheck && tsc --project tests/tsconfig.json --skipLibCheck",
     "build": "tsc",
-    "test": "node --import=tsx tests/multiple_sources.test.ts",
+    "test": "node --test --import=tsx tests/*.test.ts",
     "prepack": "tsc"
   },
   "repository": "https://github.com/Reviewable/firelease",
@@ -35,9 +35,10 @@
     "node": ">=24"
   },
   "dependencies": {
+    "firebase-childrenkeys": "^3.3.0",
     "lodash": "4.x",
     "ms": "2.x",
-    "nodefire": "7.x",
+    "nodefire": "^7.1.0",
     "safe-timers": "^1.1.0"
   },
   "devDependencies": {
