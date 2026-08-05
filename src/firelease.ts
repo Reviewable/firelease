@@ -261,6 +261,7 @@ class Task {
   async process() {
     let startTimestamp = 0;
     let acquired = false;
+    let reschedule = true;
     this.working = true;
     this.phase = 'lease';
     const transactionPromise = this.ref.transaction(itemValue => {
@@ -294,6 +295,7 @@ class Task {
         await this.run(item as WorkerItem, startTimestamp);
       }
     } catch (error) {
+      reschedule = false;
       // Hardcoded retry -- hard to do anything smarter, since we failed to update the task in
       // Firebase.
       this.expiry = 0;
@@ -306,6 +308,11 @@ class Task {
     }
     this.working = false;
     this.phase = this.removed ? 'done' : 'retry';
+    if (!this.removed && reschedule) {
+      // Wait until Queue.process() releases this task's concurrency slot before re-arming its
+      // lease-expiry timer.  Listener swaps can replay the task while it is still working.
+      timers.setTimeout(() => {void this.queue.process(this);}, 0);
+    }
   }
 
   async run(item: WorkerItem, startTimestamp: number) {

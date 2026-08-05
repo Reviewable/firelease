@@ -168,3 +168,39 @@ test('adaptive sources probe, promote, demote, and recover independently', async
     TESTABLES.resetBetweenTests();
   }
 });
+
+test('a promotion re-arms a replayed working task after it finishes', async () => {
+  TESTABLES.resetBetweenTests();
+  try {
+    firelease.settings.safeQueueSize = 10;
+    firelease.settings.queueCheckInterval = 20;
+    firelease.settings.globalMaxConcurrent = 1;
+
+    const source = new FakeQueueRef('replayed-task-database', 'queues/replayed-task');
+    const task = source.addTask('a-in-progress', {payload: 'retry after promotion'});
+    for (let index = 0; index < 8; index++) {
+      source.addTask(`z-filler-${index}`, {payload: index});
+    }
+    let runs = 0;
+    let releaseFirstRun!: () => void;
+    const firstRunBlocked = new Promise<void>(resolve => {releaseFirstRun = resolve;});
+    firelease.attachWorker(asNodeFire(source), {bufferSize: Infinity}, async item => {
+      if (item.$ref.key !== 'a-in-progress') return;
+      runs++;
+      if (runs > 1) return;
+      await firstRunBlocked;
+      return 1;
+    });
+    const sourceStats = firelease.stats.queues[firelease.stats.queues.length - 1].sources[0];
+    await waitFor(() => runs === 1 && sourceStats.mode === 'safe');
+
+    for (let index = 0; index < 8; index++) {
+      await source.child(`z-filler-${index}`).remove();
+    }
+    await waitFor(() => sourceStats.mode === 'full');
+    releaseFirstRun();
+    await waitFor(() => runs === 2 && !task.value);
+  } finally {
+    TESTABLES.resetBetweenTests();
+  }
+});
