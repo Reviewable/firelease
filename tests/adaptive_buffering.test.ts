@@ -59,13 +59,13 @@ test('adaptive sources probe, promote, demote, and recover independently', async
       await adaptiveSource.child(`initial-${index}`).remove();
     }
     await waitFor(() => adaptiveSource.deferredValueCallbacks.length === 1);
-    assert.strictEqual(adaptiveStats.mode, 'full');
+    assert.strictEqual(adaptiveStats.mode, 'safe');
     assert(Object.values(initialSafeQuery.listeners).every(listeners => listeners.length === 0));
     const inProgressTask = adaptiveSource.addTask('in-progress', {payload: 'keep alive'});
     for (let index = 0; index < 10; index++) {
       adaptiveSource.addTask(`backlog-${index}`, {payload: index});
     }
-    assert.strictEqual(adaptiveStats.mode, 'full');
+    assert.strictEqual(adaptiveStats.mode, 'safe');
     assert.strictEqual(adaptiveStats.size, 0);
     assert(adaptiveStats.sizeTimestamp);
     firelease.settings.globalMaxConcurrent = 1;
@@ -74,11 +74,13 @@ test('adaptive sources probe, promote, demote, and recover independently', async
     adaptiveSource.deferNextValue = true;
     adaptiveSource.releaseDeferredValues();
     await waitFor(
-      () => adaptiveStats.mode === 'safe' && adaptiveSource.deferredValueCallbacks.length === 1);
+      () => adaptiveStats.mode === 'full' && adaptiveSource.deferredValueCallbacks.length === 1);
     assert(Object.values(adaptiveSource.listeners).every(listeners => listeners.length === 0));
     assert.strictEqual(inProgressFinished, false);
     adaptiveSource.releaseDeferredValues();
-    await waitFor(() => adaptiveStats.size === 11 && adaptiveStats.sizeTimestamp !== undefined);
+    await waitFor(
+      () => adaptiveStats.mode === 'safe' && adaptiveStats.size === 11 &&
+        adaptiveStats.sizeTimestamp !== undefined);
     assert(adaptiveStats.sizeTimestamp);
     releaseInProgress();
     await waitFor(() => inProgressFinished && !inProgressTask.value);
@@ -107,15 +109,18 @@ test('adaptive sources probe, promote, demote, and recover independently', async
       () => adaptiveSource.childrenKeysCalls > probesBeforeReconnect &&
         adaptiveStats.mode === 'full');
 
-    firelease.settings.queueCheckInterval = '1h';
+    // Keep intervals beyond the native timer limit from overflowing and firing immediately.
+    firelease.settings.queueCheckInterval = '30d';
     const failedProbeSource = new FakeQueueRef('failed-probe-database', 'queues/failed');
     failedProbeSource.childrenKeysError = Object.assign(
       new Error('REST unavailable'), {code: 'timeout'});
     firelease.attachWorker(asNodeFire(failedProbeSource), {bufferSize: Infinity}, () => undefined);
-    const failedProbeStats = firelease.stats.queues[firelease.stats.queues.length - 1].sources[0];
     await waitFor(
-      () => failedProbeStats.mode === 'safe' && failedProbeStats.lastError !== undefined);
-    assert.strictEqual(failedProbeStats.lastError?.code, 'queue-count-failed');
+      () => capturedErrors.some(error =>
+        error.firelease?.code === 'queue-count-failed' &&
+        error.firelease.source === failedProbeSource.toString()));
+    await new Promise(resolve => {setTimeout(resolve, 25);});
+    assert.strictEqual(failedProbeSource.childrenKeysCalls, 1);
     const countError = capturedErrors.find(
       error => error.firelease?.code === 'queue-count-failed')!;
     assert.strictEqual(countError.message, 'Firelease queue count failed');

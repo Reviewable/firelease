@@ -25,7 +25,6 @@ export class QueueSourceStats {
   healthy = true;
   latency: number | null = null;
   declare pingTimestamp?: number;
-  declare lastError?: QueueSourceErrorStats;
 
   constructor(readonly ref: string) {}
 }

@@ -70,8 +70,8 @@ paths concurrently.
 Sets up regular pinging of all queues.  Can be called either before or after workers are attached,
 and will always ping all queues.  Can be called more than once to change the parameters.
 
-* `@param {Function(Object) | null} callback` The callback to invoke with `firelease.stats` each time
-  we ping all the queues.  If not specified, reports are silently dropped.
+* `@param {Function(Object) | null} callback` The callback to invoke with `firelease.stats` each
+  time we ping all the queues.  If not specified, reports are silently dropped.
 
 * `@param {number | string} interval` The interval at which to ping queues, to both check the
   current response latency and make sure no tasks are stuck.  Defaults to 1 minute.

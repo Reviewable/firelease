@@ -15,7 +15,7 @@
     "lint": "eslint src/*.ts tests/*.ts",
     "check-types": "tsc --noEmit --skipLibCheck && tsc --project tests/tsconfig.json --skipLibCheck",
     "build": "tsc",
-    "test": "node --test --import=tsx tests/stats.test.ts tests/queue_sources.test.ts tests/adaptive_buffering.test.ts",
+    "test": "node --test --import=tsx tests/*.test.ts",
     "prepack": "tsc"
   },
   "repository": "https://github.com/Reviewable/firelease",
@@ -38,12 +38,14 @@
     "firebase-childrenkeys": "^3.3.0",
     "lodash": "4.x",
     "ms": "2.x",
-    "nodefire": "^7.1.0"
+    "nodefire": "^7.1.0",
+    "safe-timers": "^1.1.0"
   },
   "devDependencies": {
     "@types/lodash": "^4.14.191",
     "@types/ms": "^2.1.0",
     "@types/node": "^24.10.0",
+    "@types/safe-timers": "^1.1.0",
     "eslint": "^10.7.0",
     "npm-check-updates": "^22.2.9",
     "reviewable-configs": "Reviewable/reviewable-configs#master",
