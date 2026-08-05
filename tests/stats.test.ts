@@ -4,7 +4,7 @@ import {test} from 'node:test';
 import {FireleaseStats, QueueSourceStats, QueueStats, TESTABLES} from '../src';
 
 test('stats are derived through the hierarchy on demand', () => {
-  TESTABLES.reset();
+  TESTABLES.resetBetweenTests();
   let stuckTasks = 0;
   const sourceStats = new QueueSourceStats('https://stats.example.test/queues/jobs');
   const queueStats = new QueueStats(
@@ -55,5 +55,5 @@ test('stats are derived through the hierarchy on demand', () => {
     maxLatency: 12,
     tasksAcquired: 3
   });
-  TESTABLES.reset();
+  TESTABLES.resetBetweenTests();
 });

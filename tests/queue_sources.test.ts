@@ -5,7 +5,7 @@ import firelease, {TESTABLES} from '../src';
 import {asNodeFire, FakeQueueRef, waitFor} from './fake_firebase';
 
 test('logical queues coordinate sources, leases, and task controls', async () => {
-  TESTABLES.reset();
+  TESTABLES.resetBetweenTests();
   try {
     assert.throws(
       () => {firelease.attachWorker([], () => {/* Do nothing. */});},
@@ -99,6 +99,6 @@ test('logical queues coordinate sources, leases, and task controls', async () =>
     const extensionTask = extensionSource.addTask('task', {payload: 5});
     await waitFor(() => extensionComplete && !extensionTask.value);
   } finally {
-    TESTABLES.reset();
+    TESTABLES.resetBetweenTests();
   }
 });

@@ -1,11 +1,12 @@
 import _ from 'lodash';
 import ms from 'ms';
 import NodeFire from 'nodefire';
+import * as timers from 'safe-timers';
 import {
   FireleaseStats, QueueSourceStats, QueueStats, type QueueSourceMode
 } from './stats';
 
-export const TESTABLES = {reset: resetBetweenTests};
+export const TESTABLES = {resetBetweenTests};
 
 const PING_INTERVAL = ms('1m');
 const PING_KEY = 'ping';
@@ -51,7 +52,6 @@ export interface FireleaseErrorDetails {
   count?: number;
   delta?: number;
   description?: string;
-  fallbackMode?: QueueSourceMode;
   itemKey?: string;
   listenerLimit?: number;
   liveCount?: number;
@@ -210,7 +210,7 @@ class Task {
   expiry = 0;
   removed?: boolean;
   working = false;
-  timeout?: NodeJS.Timeout;
+  timeout?: timers.Timeout;
 
   constructor(readonly source: QueueSource, snap: LeaseSnapshot) {
     this.queue = source.queue;
@@ -240,8 +240,8 @@ class Task {
       // will be overwritten when transaction completes or task gets removed.
       this.expiry = now + this.queue.constrainLeaseDuration(0);
     }
-    if (this.timeout) clearTimeout(this.timeout);
-    this.timeout = setTimeout(this.queue.process.bind(this.queue, this), this.expiry - now);
+    this.timeout?.clear();
+    this.timeout = timers.setTimeout(this.queue.process.bind(this.queue, this), this.expiry - now);
     return !busy;
   }
 
@@ -288,7 +288,7 @@ class Task {
         console.log(`Queue item ${this.key} lease transaction error: ${error.message}`);
         error.firelease = _.assign(error.firelease ?? {}, {itemKey: this.key, phase: 'leasing'});
         settings.captureError(error);
-        setTimeout(this.queue.scan, ms('3s'));
+        timers.setTimeout(this.queue.scan, ms('3s'));
       }
     }
     this.working = false;
@@ -409,7 +409,9 @@ class QueueCheckQueue {
   enqueue(source: QueueSource, description: string, epoch: number, run: () => Promise<void>) {
     const duplicate =
       (this.active?.source === source && this.active.epoch === epoch) ||
-      _.some(this.jobs, {source, epoch});
+      // Match shorthand would deep-compare QueueSource, but identity is required here.
+      // eslint-disable-next-line lodash/matches-shorthand
+      _.some(this.jobs, job => job.source === source && job.epoch === epoch);
     if (duplicate) {
       source.reportError(
         'queue-check-coalesced', 'Firelease queue check coalesced', 'warning', {description});
@@ -443,7 +445,9 @@ class QueueCheckQueue {
         const minimumStart = this.previousFinishedAt + this.previousDuration;
         const now = performance.now();
         if (minimumStart > now) {
-          await new Promise<void>(resolve => {setTimeout(resolve, minimumStart - now);});
+          await new Promise<void>(resolve => {
+            timers.setTimeout(resolve, minimumStart - now);
+          });
         }
 
         if (!job.source.isCurrent(job.epoch)) {
@@ -561,9 +565,9 @@ class QueueSource {
   connected = false;
   crashing = false;
   activeListener?: QueueListener;
-  checkTimer?: NodeJS.Timeout;
-  demotionTimer?: NodeJS.Timeout;
-  exitTimer?: NodeJS.Timeout;
+  checkTimer?: timers.Timeout;
+  demotionTimer?: timers.Timeout;
+  exitTimer?: timers.Timeout;
   initialStartupComplete = false;
   readonly connectionRef: NodeFire;
   readonly stats: QueueSourceStats;
@@ -608,7 +612,7 @@ class QueueSource {
     this.connected = false;
     this.epoch++;
     this.cancelPendingWork();
-    if (this.exitTimer) clearTimeout(this.exitTimer);
+    this.exitTimer?.clear();
     this.exitTimer = undefined;
     this.activeListener?.stop();
     this.activeListener = undefined;
@@ -655,23 +659,22 @@ class QueueSource {
       const keys = await this.ref.childrenKeys({timeout: QUEUE_CHECK_TIMEOUT});
       this.stats.size = keys.length;
       this.stats.sizeTimestamp = Date.now();
-      delete this.stats.lastError;
       return keys.length;
     } catch (error) {
       this.reportError(
         'queue-count-failed', 'Firelease queue count failed', 'warning',
-        {cause: error.message, fallbackMode: 'safe', reason});
+        {cause: error.message, reason});
       return null;
     }
   }
 
   scheduleSafeCheck() {
-    if (this.checkTimer) clearTimeout(this.checkTimer);
+    this.checkTimer?.clear();
     if (!(this.adaptive && this.connected && this.mode === 'safe')) return;
     const interval = queueCheckInterval;
     const jitteredInterval = Math.max(0, Math.round(interval * (0.95 + Math.random() * 0.1)));
     const epoch = this.epoch;
-    this.checkTimer = setTimeout(() => {
+    this.checkTimer = timers.setTimeout(() => {
       this.checkTimer = undefined;
       this.scheduleSafeCheck();
       void queueCheckQueue.enqueue(
@@ -706,8 +709,8 @@ class QueueSource {
     if (!(this.adaptive && this.connected && this.mode === 'full' && !this.demotionTimer)) return;
     const epoch = this.epoch;
     const delay = Math.round(Math.random() * DEMOTION_JITTER);
-    console.log(`Queue worker ${this.ref} scheduling demotion with ${delay}ms jitter`);
-    this.demotionTimer = setTimeout(() => {
+    console.log(`Queue worker ${this.ref} scheduling demotion with ${ms(delay)} jitter`);
+    this.demotionTimer = timers.setTimeout(() => {
       this.demotionTimer = undefined;
       void queueCheckQueue.enqueue(this, 'live-count demotion', epoch, () => this.demote(epoch));
     }, delay);
@@ -731,23 +734,26 @@ class QueueSource {
     this.activeListener?.stop();
     this.activeListener = undefined;
     this.clearTasks();
-    this.mode = mode;
-    this.stats.mode = mode;
     if (mode === 'full') {
-      if (this.checkTimer) clearTimeout(this.checkTimer);
+      this.checkTimer?.clear();
       this.checkTimer = undefined;
     } else {
-      if (this.demotionTimer) clearTimeout(this.demotionTimer);
+      this.demotionTimer?.clear();
       this.demotionTimer = undefined;
     }
     const listener = new QueueListener(this, mode);
     this.activeListener = listener;
     listener.start();
     const loaded = await listener.waitForLoad();
-    if (!this.isCurrent(epoch) || this.activeListener !== listener) {
+    if (!loaded || !this.isCurrent(epoch) || this.activeListener !== listener) {
       listener.stop();
+      if (this.activeListener === listener) this.activeListener = undefined;
+      if (this.isCurrent(epoch) && this.mode === 'safe') this.scheduleSafeCheck();
       return false;
     }
+    this.mode = mode;
+    this.stats.mode = mode;
+    listener.notify();
     return loaded;
   }
 
@@ -759,15 +765,15 @@ class QueueSource {
     if (size > settings.safeQueueSize) {
       this.scheduleDemotion();
     } else if (this.demotionTimer) {
-      clearTimeout(this.demotionTimer);
+      this.demotionTimer.clear();
       this.demotionTimer = undefined;
     }
   };
 
   cancelPendingWork() {
-    if (this.checkTimer) clearTimeout(this.checkTimer);
+    this.checkTimer?.clear();
     this.checkTimer = undefined;
-    if (this.demotionTimer) clearTimeout(this.demotionTimer);
+    this.demotionTimer?.clear();
     this.demotionTimer = undefined;
   }
 
@@ -787,15 +793,11 @@ class QueueSource {
       this.stats.latency = latency;
       this.stats.healthy = latency < this.queue.options.healthyPingLatency;
       this.stats.pingTimestamp = Date.now();
-    } catch (error) {
+    } catch {
       const latency = performance.now() - startedAt;
       this.stats.latency = latency;
       this.stats.healthy = false;
       this.stats.pingTimestamp = Date.now();
-      this.stats.lastError = {
-        message: `Queue ping failed: ${error.message}`, timestamp: Date.now(),
-        code: 'queue-ping-failed'
-      };
     }
   }
 
@@ -810,7 +812,6 @@ class QueueSource {
     };
     if (level === 'error') console.error(message, error.firelease);
     else console.warn(message, error.firelease);
-    this.stats.lastError = {message, timestamp: Date.now(), code, delta: details.delta};
     settings.captureError(error);
   }
 
@@ -827,10 +828,9 @@ class QueueSource {
       queue: this.queue.ref.toString(), source: this.ref.toString()
     };
     console.error(message, error.firelease);
-    this.stats.lastError = {message, timestamp: Date.now(), code, delta: details.delta};
     settings.captureError(error);
     // Give the error capture a chance to process before exiting.
-    this.exitTimer = setTimeout(() => {process.exit(1);}, ms('3s'));
+    this.exitTimer = timers.setTimeout(() => {process.exit(1);}, ms('3s'));
   }
 
   addTask(snap: LeaseSnapshot) {
@@ -854,7 +854,7 @@ class QueueSource {
     if (task?.source !== this) return;
     task.removed = true;
     if (task.timeout) {
-      clearTimeout(task.timeout);
+      task.timeout.clear();
       delete task.timeout;
     }
     if (!task.working) delete tasks[taskKey];
@@ -1029,7 +1029,7 @@ function fullQueueSize() {
 }
 
 let pinging = false;
-let pingIntervalHandle: NodeJS.Timeout | undefined;
+let pingIntervalHandle: timers.Interval | undefined;
 let pingCallback: ((report: PingReport) => void) | null | undefined;
 
 /**
@@ -1051,9 +1051,9 @@ export function pingQueues(
   interval?: Duration
 ): void {
   const normalizedInterval = interval ? duration(interval) : PING_INTERVAL;
-  if (pingIntervalHandle) clearInterval(pingIntervalHandle);
+  pingIntervalHandle?.clear();
   pingCallback = callback;
-  pingIntervalHandle = setInterval(() => {
+  pingIntervalHandle = timers.setInterval(() => {
     void runPingCheck();
   }, normalizedInterval);
 }
@@ -1090,7 +1090,7 @@ function waitUntilDeleted(ref: NodeFire, timeout: number) {
       resolve();
     }
     ref.on('value', onValue, reject);
-    if (timeout) setTimeout(() => {reject(new Error('timeout'));}, timeout);
+    if (timeout) timers.setTimeout(() => {reject(new Error('timeout'));}, timeout);
   });
 }
 
@@ -1210,7 +1210,7 @@ export function listTasksInProgress(): string[] {
 
 function resetBetweenTests() {
   scanAll.cancel();
-  if (pingIntervalHandle) clearInterval(pingIntervalHandle);
+  pingIntervalHandle?.clear();
   pingIntervalHandle = undefined;
   pingCallback = undefined;
   pinging = false;
@@ -1218,7 +1218,7 @@ function resetBetweenTests() {
   _.forEach(queues, queue => {queue.reset();});
   queueCheckQueue.reset();
   _.forEach(tasks, (task, taskKey) => {
-    if (task.timeout) clearTimeout(task.timeout);
+    task.timeout?.clear();
     delete tasks[taskKey];
   });
   queues.length = 0;

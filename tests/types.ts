@@ -43,7 +43,7 @@ void [
   TESTABLES, attachWorker, blacklist, extendLease, listTasksInProgress, pingQueues, shutdown,
   namedDefaults, namedRetry, namedSettings
 ];
-TESTABLES.reset();
+TESTABLES.resetBetweenTests();
 
 // @ts-expect-error Generator workers are no longer supported.
 firelease.attachWorker(queueRef, generatorWorker);
