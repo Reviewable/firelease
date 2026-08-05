@@ -62,8 +62,10 @@ firelease.attachWorker(queueRef, generatorWorker);
 firelease.attachWorker(queueRef, item => {
   const payload = item.payload;
   const leaseTimeRemaining: number = item.$leaseTimeRemaining;
+  const firstAcquisition: true | undefined = item._lease.firstAcquisition;
   void payload;
   void leaseTimeRemaining;
+  void firstAcquisition;
   return firelease.RETRY;
 });
 

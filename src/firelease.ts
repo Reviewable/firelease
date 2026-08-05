@@ -39,7 +39,7 @@ export interface RetryDirective {
 }
 
 export interface WorkerItem extends LeaseItem {
-  _lease: Lease & {expiry: number};
+  _lease: Lease & {expiry: number, readonly firstAcquisition?: true};
   readonly $ref: NodeFire;
   readonly $leaseTimeRemaining: number;
 }
@@ -270,12 +270,14 @@ class Task {
     let acquired = false;
     let contended = false;
     let reschedule = true;
+    let firstAcquisition = false;
     this.working = true;
     this.phase = 'lease';
     const transactionPromise = this.ref.transaction(itemValue => {
       const item = itemValue as LeaseItem | null;
       acquired = false;
       contended = false;
+      firstAcquisition = false;
       if (tasks[this.key] !== this || this.removed) return;
       if (!item || this.ref.key === PING_KEY) {
         acquired = true;
@@ -289,6 +291,7 @@ class Task {
         return item;
       }
       acquired = true;
+      firstAcquisition = _.isNil(item._lease?.initial);
       item._lease ??= {};
       item._lease.time = this.queue.constrainLeaseDuration((item._lease.time ?? 0) * 2);
       item._lease.expiry = startTimestamp + item._lease.time;
@@ -303,7 +306,7 @@ class Task {
       transactionCompleted = true;
       if (acquired && item !== null && this.ref.key !== PING_KEY) {
         this.recordLeaseTransaction('acquired', transactionPromise.transaction);
-        if (!_.isObject(item)) throw new Error(`item not an object: ${item}`);
+        if (firstAcquisition) Object.defineProperty(item._lease, 'firstAcquisition', {value: true});
         this.queue.stats.tasksAcquired++;
         await this.run(item as WorkerItem, startTimestamp);
       } else if (contended) {
@@ -1113,7 +1116,9 @@ class Queue {
  *          NodeFire transaction tries, and duration in milliseconds.
  * @param {function(Object):RETRY | number | string | undefined} worker The worker function that
  *        handles enqueued tasks.  It will be given a task object as argument, with a special $ref
- *        attribute set to the Nodefire ref of that task.  The worker can perform arbitrary
+ *        attribute set to the Nodefire ref of that task.  On a task's first acquisition its _lease
+ *        also has a non-enumerable firstAcquisition property set to true; it is not saved to
+ *        Firebase and is absent on subsequent acquisitions.  The worker can perform arbitrary
  *        computation whose duration should not exceed the queue's minLease value.  It can
  *        manipulate the task itself in Firebase as well, e.g. to delete it (to get at-most-once
  *        queue semantics) or otherwise modify it.  The worker can return any of the following:

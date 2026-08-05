@@ -56,10 +56,12 @@ paths concurrently.
 
 * `@param {function(Object):RETRY | number | string | undefined}` worker The worker function that
   handles enqueued tasks.  It will be given a task object as argument, with a special $ref attribute
-  set to the Nodefire ref of that task.  The worker can perform arbitrary computation whose duration
-  should not exceed the queue's minLease value.  It can manipulate the task itself in Firebase as
-  well, e.g. to delete it (to get at-most-once queue semantics) or otherwise modify it.  The worker
-  can return any of the following:
+  set to the Nodefire ref of that task.  On a task's first acquisition, the worker-facing `_lease`
+  object also has a non-enumerable `firstAcquisition: true` property that is not saved to Firebase;
+  the property is absent on subsequent acquisitions.  The worker can perform arbitrary computation
+  whose duration should not exceed the queue's minLease value.  It can manipulate the task itself in
+  Firebase as well, e.g. to delete it (to get at-most-once queue semantics) or otherwise modify it.
+  The worker can return any of the following:
   * undefined or null to cause the task to be retired from the queue.
   * firelease.RETRY to cause the task to be retried after the current lease expires (and reset the
     lease backoff counter).
