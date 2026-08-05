@@ -1,10 +1,11 @@
 import NodeFire from 'nodefire';
 import firelease, {
-  RETRY, attachWorker, blacklist, defaults, extendLease, listTasksInProgress, pingQueues, settings,
-  shutdown, type Duration, type FireleaseApi, type FireleaseError, type FireleaseErrorDetails,
-  type FireleaseErrorLevel, type FireleaseSettings, type Lease, type LeaseItem, type PingReport,
-  type QueueOptions, type QueueRef, type RetryDirective, type Worker, type WorkerItem,
-  type WorkerResult
+  RETRY, TESTABLES, attachWorker, blacklist, defaults, extendLease, listTasksInProgress, pingQueues,
+  settings, shutdown, type Duration, type FireleaseApi, type FireleaseError,
+  type FireleaseErrorDetails, type FireleaseErrorLevel, type FireleaseSettings,
+  type FireleaseStats, type Lease, type LeaseItem, type PingReport, type QueueOptions,
+  type QueueRef, type QueueSourceMode, type QueueSourceStats, type QueueStats,
+  type RetryDirective, type Worker, type WorkerItem, type WorkerResult
 } from '../src';
 
 // Verify the package's default and named TypeScript exports.
@@ -21,6 +22,10 @@ declare const duration: Duration;
 declare const errorDetails: FireleaseErrorDetails;
 declare const errorLevel: FireleaseErrorLevel;
 declare const fireleaseSettings: FireleaseSettings;
+declare const fireleaseStats: FireleaseStats;
+declare const queueStats: QueueStats;
+declare const queueSourceStats: QueueSourceStats;
+declare const queueSourceMode: QueueSourceMode;
 declare const queue: QueueRef;
 declare const retry: RetryDirective;
 declare const worker: Worker;
@@ -28,15 +33,17 @@ declare const workerResult: WorkerResult;
 declare const api: FireleaseApi;
 void [
   lease, leaseItem, workerItem, fireleaseError, pingReport, queueOptions, duration, errorDetails,
-  errorLevel, fireleaseSettings, queue, retry, worker, workerResult, api
+  errorLevel, fireleaseSettings, fireleaseStats, queueStats, queueSourceStats, queueSourceMode,
+  queue, retry, worker, workerResult, api
 ];
 const namedDefaults: QueueOptions = defaults;
 const namedRetry: RetryDirective = RETRY;
 const namedSettings: FireleaseSettings = settings;
 void [
-  attachWorker, blacklist, extendLease, listTasksInProgress, pingQueues, shutdown,
+  TESTABLES, attachWorker, blacklist, extendLease, listTasksInProgress, pingQueues, shutdown,
   namedDefaults, namedRetry, namedSettings
 ];
+TESTABLES.reset();
 
 // @ts-expect-error Generator workers are no longer supported.
 firelease.attachWorker(queueRef, generatorWorker);
@@ -63,13 +70,19 @@ firelease.attachWorker(queueRef, {maxLeaseDelay: '1s'}, () => undefined);
 
 firelease.pingQueues(report => {
   const tasksAcquired: number = report.tasksAcquired;
+  const sickQueues: (string | null)[] = report.sickQueues;
+  const sickSources: string[] = report.sickSources;
+  const sources: QueueSourceStats[] = report.queues.flatMap(queueResult => queueResult.sources);
   // @ts-expect-error Lease-delay telemetry was removed with the delay mechanism.
   void report.leaseDelays;
-  void tasksAcquired;
+  void [tasksAcquired, sickQueues, sickSources, sources];
 });
 
 firelease.settings.globalMaxConcurrent = 10;
+firelease.settings.safeQueueSize = 6000;
+firelease.settings.queueCheckInterval = '5m';
 firelease.settings.captureError = error => {void error.firelease;};
+const currentStats: FireleaseStats = firelease.stats;
 // @ts-expect-error Mutable settings are nested under `settings`.
 firelease.globalMaxConcurrent = 10;
 // @ts-expect-error Mutable settings are nested under `settings`.
@@ -77,4 +90,4 @@ firelease.captureError = () => undefined;
 const shutdownPromise: Promise<void> = firelease.shutdown();
 const taskUrls: string[] = firelease.listTasksInProgress();
 void shutdownPromise;
-void taskUrls;
+void [taskUrls, currentStats];
