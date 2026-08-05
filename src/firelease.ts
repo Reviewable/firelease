@@ -787,18 +787,25 @@ class QueueSource {
         pingFree = !item;
         return item ?? {timestamp, _lease: {expiry: NodeFire.SERVER_TIMESTAMP}};
       }, {prefetchValue: false, timeout: ms('10s')});
-      if (!pingFree) return;  // another process is currently pinging
-      await waitUntilDeleted(pingRef, this.queue.options.healthyPingLatency + ms('10s'));
-      const latency = performance.now() - startedAt;
-      this.stats.latency = latency;
-      this.stats.healthy = latency < this.queue.options.healthyPingLatency;
-      this.stats.pingTimestamp = Date.now();
-    } catch {
-      const latency = performance.now() - startedAt;
-      this.stats.latency = latency;
-      this.stats.healthy = false;
-      this.stats.pingTimestamp = Date.now();
+    } catch (error) {
+      this.recordPingResult(startedAt, false);
+      throw error;
     }
+    if (!pingFree) return;  // another process is currently pinging
+    try {
+      await waitUntilDeleted(pingRef, this.queue.options.healthyPingLatency + ms('10s'));
+    } catch {
+      this.recordPingResult(startedAt, false);
+      return;
+    }
+    this.recordPingResult(startedAt, true);
+  }
+
+  recordPingResult(startedAt: number, succeeded: boolean) {
+    const latency = performance.now() - startedAt;
+    this.stats.latency = latency;
+    this.stats.healthy = succeeded && latency < this.queue.options.healthyPingLatency;
+    this.stats.pingTimestamp = Date.now();
   }
 
   reportError(

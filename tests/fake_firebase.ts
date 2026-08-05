@@ -92,6 +92,7 @@ export class FakeTaskRef {
   transaction(
     update: (value: FakeTaskValue | null) => FakeTaskValue | null | undefined
   ) {
+    if (this.queueRef.transactionError) return Promise.reject(this.queueRef.transactionError);
     const previous = clone(this.value);
     const updated = update(clone(this.value));
     if (updated !== undefined) this.value = clone(updated);
@@ -212,6 +213,7 @@ export class FakeQueueRef {
   childrenKeysCountOverride?: number;
   childrenKeysCalls = 0;
   listenerError?: Error;
+  transactionError?: Error;
   fixedNow?: number;
 
   constructor(databaseName: string, readonly path: string) {
