@@ -682,6 +682,7 @@ class QueueSource {
     try {
       const keys = await this.ref.childrenKeys({timeout: QUEUE_CHECK_TIMEOUT});
       this.stats.size = keys.length;
+      delete this.stats.sizeDelta;
       this.stats.sizeTimestamp = Date.now();
       return keys.length;
     } catch (error) {
@@ -713,7 +714,9 @@ class QueueSource {
     const liveCount = this.activeListener?.snapshots.size ?? 0;
     const listenerLimit = this.listenerLimit('safe');
     const delta = count - liveCount;
-    if (liveCount < listenerLimit && delta >= QUEUE_SIZE_MISMATCH_THRESHOLD) {
+    if (liveCount < listenerLimit) this.stats.sizeDelta = delta;
+    else delete this.stats.sizeDelta;
+    if (this.stats.sizeDelta !== undefined && delta >= QUEUE_SIZE_MISMATCH_THRESHOLD) {
       this.reportError(
         'safe-queue-size-mismatch', 'Firelease safe queue size mismatch', 'error',
         {count, delta, listenerLimit, liveCount});
@@ -753,6 +756,7 @@ class QueueSource {
     const lastFullSize = this.activeListener?.snapshots.size ?? 0;
     if (!await this.loadListener('safe', epoch, 'demotion')) return;
     this.stats.size = lastFullSize;
+    delete this.stats.sizeDelta;
     this.stats.sizeTimestamp = Date.now();
     console.log(
       `Queue worker ${this.ref} demoted to safe mode with` +
@@ -819,6 +823,7 @@ class QueueSource {
     if (listener !== this.activeListener || !listener.loaded) return;
     const size = listener.snapshots.size;
     this.stats.size = size;
+    delete this.stats.sizeDelta;
     delete this.stats.sizeTimestamp;
     if (size > settings.safeQueueSize) {
       this.scheduleDemotion();

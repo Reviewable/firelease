@@ -97,6 +97,7 @@ test('adaptive sources probe, promote, demote, and recover independently', async
     assert.strictEqual(mismatchError.firelease?.listenerLimit, 10);
     assert.strictEqual(mismatchError.firelease?.liveCount, 9);
     assert.strictEqual(mismatchError.firelease?.source, adaptiveSource.toString());
+    assert.strictEqual(adaptiveStats.sizeDelta, 100);
     adaptiveSource.childrenKeysCountOverride = undefined;
 
     const probesBeforeReconnect = adaptiveSource.childrenKeysCalls;
@@ -108,6 +109,7 @@ test('adaptive sources probe, promote, demote, and recover independently', async
     await waitFor(
       () => adaptiveSource.childrenKeysCalls > probesBeforeReconnect &&
         adaptiveStats.mode === 'full');
+    assert.strictEqual(adaptiveStats.sizeDelta, undefined);
 
     // Keep intervals beyond the native timer limit from overflowing and firing immediately.
     firelease.settings.queueCheckInterval = '30d';

@@ -10,17 +10,11 @@ function exposeGetters(instance: object, properties: string[]) {
   }
 }
 
-export interface QueueSourceErrorStats {
-  message: string;
-  timestamp: number;
-  code?: string;
-  delta?: number;
-}
-
 export class QueueSourceStats {
   connected = false;
   mode: QueueSourceMode = 'safe';
   size: number | null = null;
+  declare sizeDelta?: number;
   declare sizeTimestamp?: number;
   healthy = true;
   latency: number | null = null;

@@ -84,6 +84,7 @@ firelease.settings.queueCheckInterval = '5m';
 firelease.settings.queueLoadTimeout = '1m';
 firelease.settings.captureError = error => {void error.firelease;};
 const currentStats: FireleaseStats = firelease.stats;
+const sizeDelta: number | undefined = queueSourceStats.sizeDelta;
 // @ts-expect-error Mutable settings are nested under `settings`.
 firelease.globalMaxConcurrent = 10;
 // @ts-expect-error Mutable settings are nested under `settings`.
@@ -91,4 +92,4 @@ firelease.captureError = () => undefined;
 const shutdownPromise: Promise<void> = firelease.shutdown();
 const taskUrls: string[] = firelease.listTasksInProgress();
 void shutdownPromise;
-void [taskUrls, currentStats];
+void [taskUrls, currentStats, sizeDelta];

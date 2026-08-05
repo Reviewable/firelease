@@ -145,6 +145,7 @@ The live stats object also passed to the ping callback.  Global fields include `
 `sickQueues`, `sickSources`, `stuckTasks`, `maxLatency`, and `tasksAcquired`.  Each entry in `queues`
 includes its own health, latency, acquisition count, and all physical `sources`.  Source stats
 include `connected`, current `mode` (`full` or `safe`), last known `size`, `sizeTimestamp` when the
-size came from a shallow REST check, ping health and latency, and the latest structured error when
-present.  Queue size is reported only for adaptive sources; it remains `null` for sources with an
-explicit finite `bufferSize` because a limited listener cannot determine the true queue size.
+size came from a shallow REST check, `sizeDelta` when the safe listener was below its limit (the
+REST count minus its buffered task count), and ping health and latency.  Queue size is reported only
+for adaptive sources; it remains `null` for sources with an explicit finite `bufferSize` because a
+limited listener cannot determine the true queue size.
