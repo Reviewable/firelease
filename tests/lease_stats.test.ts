@@ -4,7 +4,7 @@ import {test} from 'node:test';
 import firelease, {TESTABLES, type LeaseTransactionOutcome} from '../src';
 import {asNodeFire, FakeQueueRef, waitFor} from './fake_firebase';
 
-test('lease stats capture acquisitions and contention through the hierarchy', async () => {
+test('lease stats capture all transaction outcomes through the hierarchy', async () => {
   TESTABLES.resetBetweenTests();
   try {
     const source = new FakeQueueRef('lease-stats-database', 'queues/jobs');
@@ -48,7 +48,7 @@ test('lease stats capture acquisitions and contention through the hierarchy', as
     source.addTask('failed', {payload: 'failed'});
     await waitFor(() => capturedMetrics.length === 3);
 
-    const expected = {acquired: 1, contended: 1, tries: 5, duration: 35};
+    const expectedCounts = {acquired: 1, contended: 1, failed: 1, tries: 9};
     assert.strictEqual(workerCalls, 1);
     assert.deepStrictEqual(capturedMetrics, [
       ['acquired', 3, 25],
@@ -59,9 +59,13 @@ test('lease stats capture acquisitions and contention through the hierarchy', as
       capturedErrors.map(error => error.message),
       ['Metric capture failed', 'Lease transaction failed'],
     );
-    assert.deepStrictEqual(sourceStats.leaseTransactions, expected);
-    assert.deepStrictEqual(queueStats.leaseTransactions, expected);
-    assert.deepStrictEqual(firelease.stats.leaseTransactions, expected);
+    for (const stats of [
+      sourceStats.leaseTransactions, queueStats.leaseTransactions, firelease.stats.leaseTransactions
+    ]) {
+      const {duration, ...counts} = stats;
+      assert.deepStrictEqual(counts, expectedCounts);
+      assert.ok(Math.abs(duration - 26.15) < Number.EPSILON * 26.15);
+    }
     assert.strictEqual(queueStats.tasksAcquired, 1);
     assert.strictEqual(firelease.stats.tasksAcquired, 1);
   } finally {

@@ -150,16 +150,15 @@ Mutable default option values for all subsequent attachWorker calls.  See that f
 
 The live stats object also passed to the ping callback.  Global fields include `healthy`,
 `sickQueues`, `sickSources`, `stuckTasks`, `maxLatency`, `leaseTransactions`, and the legacy
-`tasksAcquired`.  `leaseTransactions` contains cumulative `acquired`, `contended`, `tries`, and
-`duration` (in milliseconds) totals for successfully settled task lease transactions.  It is
-available for every physical source, with live additive rollups on each logical queue and at the
-global level.  `tries` and `duration` come from NodeFire transaction metadata; dividing them by
-`acquired + contended` gives their respective per-transaction averages.  Calling
-`resetLeaseTransactions()` on a source, queue, or the global stats returns its pre-reset totals and
-resets the corresponding source counters to zero, allowing each reporting interval to be emitted
-directly to a metrics service.  The legacy `tasksAcquired` field remains lifetime-cumulative and is
-not reset.  Each entry in `queues` includes its own health, latency, leasing totals, and all physical
-`sources`.  Queue-level
+`tasksAcquired`.  `leaseTransactions` contains lifetime `acquired`, `contended`, `failed`, and
+`tries` counts for task lease transactions.  `tries` includes failed transactions and comes from
+NodeFire transaction metadata.  `duration` is an exponential moving average of the NodeFire
+transaction duration in milliseconds, using an alpha of 0.1.  These stats are available for every
+physical source.  Logical queue and global counts are additive, while their duration is the average
+of the underlying duration values weighted by each source or queue's total lease attempts
+(`acquired + contended + failed`).  The legacy `tasksAcquired` field also remains
+lifetime-cumulative.  Each entry in `queues` includes its own health, latency, leasing totals, and
+all physical `sources`.  Queue-level
 `size` and `sizeDelta` sum their source values when all are known, `sizeTimestamp` is the oldest
 source timestamp, and `mode` is `full`, `safe`, or `mixed`.  Source stats include `connected`,
 current `mode` (`full` or `safe`), last known `size`, `sizeTimestamp` when the size came from a

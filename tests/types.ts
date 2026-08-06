@@ -90,6 +90,7 @@ firelease.pingQueues(report => {
   const tasksAcquired: number = report.tasksAcquired;
   const acquired: number = report.leaseTransactions.acquired;
   const contended: number = report.leaseTransactions.contended;
+  const failed: number = report.leaseTransactions.failed;
   const tries: number = report.leaseTransactions.tries;
   const transactionDuration: number = report.leaseTransactions.duration;
   const sickQueues: (string | null)[] = report.sickQueues;
@@ -98,7 +99,8 @@ firelease.pingQueues(report => {
   // @ts-expect-error Lease-delay telemetry was removed with the delay mechanism.
   void report.leaseDelays;
   void [
-    tasksAcquired, acquired, contended, tries, transactionDuration, sickQueues, sickSources, sources
+    tasksAcquired, acquired, contended, failed, tries, transactionDuration, sickQueues, sickSources,
+    sources
   ];
 });
 
@@ -115,7 +117,9 @@ const aggregateSizeDelta: number | undefined = queueStats.sizeDelta;
 const aggregateSizeTimestamp: number | undefined = queueStats.sizeTimestamp;
 const sourceAcquired: number = queueSourceStats.leaseTransactions.acquired;
 const queueContended: number = queueStats.leaseTransactions.contended;
-const intervalLeaseTransactions: LeaseTransactionStats = queueStats.resetLeaseTransactions();
+const failedLeaseTransactions: number = queueStats.leaseTransactions.failed;
+// @ts-expect-error Lease transaction stats are lifetime totals and cannot be reset.
+queueStats.resetLeaseTransactions();
 // @ts-expect-error Mutable settings are nested under `settings`.
 firelease.globalMaxConcurrent = 10;
 // @ts-expect-error Mutable settings are nested under `settings`.
@@ -125,5 +129,5 @@ const taskUrls: string[] = firelease.listTasksInProgress();
 void shutdownPromise;
 void [
   taskUrls, currentStats, sizeDelta, aggregateMode, aggregateSize, aggregateSizeDelta,
-  aggregateSizeTimestamp, sourceAcquired, queueContended, intervalLeaseTransactions
+  aggregateSizeTimestamp, sourceAcquired, queueContended, failedLeaseTransactions
 ];

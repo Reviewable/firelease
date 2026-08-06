@@ -14,6 +14,7 @@ const QUEUE_CHECK_TIMEOUT = ms('15s');
 const QUEUE_SIZE_HYSTERESIS = 0.15;
 const QUEUE_SIZE_MISMATCH_THRESHOLD = 100;
 const DEMOTION_JITTER = ms('30s');
+const LEASE_TRANSACTION_DURATION_ALPHA = 0.1;
 
 declare const RETRY_DIRECTIVE: unique symbol;
 
@@ -29,6 +30,10 @@ export interface Lease {
   extendLeasePromise?: Promise<void>;
 }
 
+export type AcquiredLease = Lease & {
+  expiry: number, time: number, attempts: number, initial: number, readonly firstAcquisition?: true
+};
+
 export interface LeaseItem {
   _lease?: Lease;
   [key: string]: any;
@@ -39,7 +44,7 @@ export interface RetryDirective {
 }
 
 export interface WorkerItem extends LeaseItem {
-  _lease: Lease & {expiry: number, readonly firstAcquisition?: true};
+  _lease: AcquiredLease;
   readonly $ref: NodeFire;
   readonly $leaseTimeRemaining: number;
 }
@@ -341,12 +346,14 @@ class Task {
   ) {
     const tries = transaction.tries ?? 0;
     const transactionDuration = transaction.duration ?? 0;
-    if (outcome !== 'failed') {
-      const leaseStats = this.source.stats.leaseTransactions;
-      leaseStats[outcome] += 1;
-      leaseStats.tries += tries;
-      leaseStats.duration += transactionDuration;
-    }
+    const leaseStats = this.source.stats.leaseTransactions;
+    const priorAttempts = leaseStats.acquired + leaseStats.contended + leaseStats.failed;
+    leaseStats[outcome] += 1;
+    leaseStats.tries += tries;
+    leaseStats.duration = priorAttempts === 0 ?
+      transactionDuration :
+      leaseStats.duration * (1 - LEASE_TRANSACTION_DURATION_ALPHA) +
+        transactionDuration * LEASE_TRANSACTION_DURATION_ALPHA;
     try {
       this.queue.options.captureLeaseTransactionMetrics?.(outcome, tries, transactionDuration);
     } catch (error) {
@@ -437,7 +444,7 @@ class Task {
         if (currentItem._lease) delete currentItem._lease.busy;
         return currentItem;
       }, {prefetchValue: false}) as LeaseItem | null | undefined;
-      if (item2) item._lease = item2._lease as Lease & {expiry: number};
+      if (item2) item._lease = item2._lease as AcquiredLease;
     } catch (postProcessingError) {
       this.handlePostProcessingError(postProcessingError);
     }

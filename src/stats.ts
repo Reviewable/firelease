@@ -6,30 +6,30 @@ export type QueueMode = QueueSourceMode | 'mixed';
 export interface LeaseTransactionStats {
   acquired: number;
   contended: number;
+  failed: number;
   tries: number;
   duration: number;
 }
 
 function createLeaseTransactionStats(): LeaseTransactionStats {
-  return {acquired: 0, contended: 0, tries: 0, duration: 0};
+  return {acquired: 0, contended: 0, failed: 0, tries: 0, duration: 0};
 }
 
 function rollUpLeaseTransactions(items: LeaseTransactionStats[]) {
   const result = createLeaseTransactionStats();
   result.acquired = _.sumBy(items, 'acquired');
   result.contended = _.sumBy(items, 'contended');
+  result.failed = _.sumBy(items, 'failed');
   result.tries = _.sumBy(items, 'tries');
-  result.duration = _.sumBy(items, 'duration');
+  const attempts = _.sumBy(items, countLeaseAttempts);
+  if (attempts) {
+    result.duration = _.sumBy(items, item => item.duration * countLeaseAttempts(item)) / attempts;
+  }
   return result;
 }
 
-function resetLeaseTransactions(stats: LeaseTransactionStats) {
-  const snapshot = {...stats};
-  stats.acquired = 0;
-  stats.contended = 0;
-  stats.tries = 0;
-  stats.duration = 0;
-  return snapshot;
+function countLeaseAttempts(stats: LeaseTransactionStats) {
+  return stats.acquired + stats.contended + stats.failed;
 }
 
 function exposeGetters(instance: object, properties: string[]) {
@@ -52,10 +52,6 @@ export class QueueSourceStats {
   readonly leaseTransactions = createLeaseTransactionStats();
 
   constructor(readonly ref: string) {}
-
-  resetLeaseTransactions() {
-    return resetLeaseTransactions(this.leaseTransactions);
-  }
 }
 
 export class QueueStats {
@@ -102,12 +98,6 @@ export class QueueStats {
   get leaseTransactions() {
     return rollUpLeaseTransactions(_.map(this.sources, 'leaseTransactions'));
   }
-
-  resetLeaseTransactions() {
-    const snapshot = this.leaseTransactions;
-    _.forEach(this.sources, source => {source.resetLeaseTransactions();});
-    return snapshot;
-  }
 }
 
 export class FireleaseStats {
@@ -152,12 +142,6 @@ export class FireleaseStats {
 
   get leaseTransactions() {
     return rollUpLeaseTransactions(_.map(this.queues, 'leaseTransactions'));
-  }
-
-  resetLeaseTransactions() {
-    const snapshot = this.leaseTransactions;
-    _.forEach(this.queues, queue => {queue.resetLeaseTransactions();});
-    return snapshot;
   }
 
   get tasksAcquired() {
