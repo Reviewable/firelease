@@ -99,14 +99,18 @@ export class FakeTaskRef {
       tries: this.queueRef.transactionTries,
       duration: this.queueRef.transactionDuration
     };
+    let transactionPromise: Promise<FakeTaskValue | null>;
     if (this.queueRef.transactionError) {
-      return Object.assign(Promise.reject(this.queueRef.transactionError), {transaction: metadata});
+      transactionPromise = Promise.reject(this.queueRef.transactionError);
+    } else {
+      const previous = clone(this.value);
+      const updated = update(clone(this.value));
+      if (updated !== undefined) this.value = clone(updated);
+      this.queueRef.notifyTaskChange(this, previous);
+      transactionPromise = Promise.resolve(clone(this.value));
     }
-    const previous = clone(this.value);
-    const updated = update(clone(this.value));
-    if (updated !== undefined) this.value = clone(updated);
-    this.queueRef.notifyTaskChange(this, previous);
-    return Object.assign(Promise.resolve(clone(this.value)), {transaction: metadata});
+    return this.queueRef.omitTransactionMetadata ?
+      transactionPromise : Object.assign(transactionPromise, {transaction: metadata});
   }
 
   get() {
@@ -223,6 +227,7 @@ export class FakeQueueRef {
   childrenKeysCalls = 0;
   listenerError?: Error;
   transactionError?: Error;
+  omitTransactionMetadata = false;
   transactionTries = 1;
   transactionDuration = 0;
   beforeTransaction?: (ref: FakeTaskRef) => void;

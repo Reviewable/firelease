@@ -21,10 +21,8 @@ function rollUpLeaseTransactions(items: LeaseTransactionStats[]) {
   result.contended = _.sumBy(items, 'contended');
   result.failed = _.sumBy(items, 'failed');
   result.tries = _.sumBy(items, 'tries');
-  const attempts = _.sumBy(items, countLeaseAttempts);
-  if (attempts) {
-    result.duration = _.sumBy(items, item => item.duration * countLeaseAttempts(item)) / attempts;
-  }
+  const attemptedItems = _.filter(items, countLeaseAttempts);
+  if (attemptedItems.length) result.duration = _.meanBy(attemptedItems, 'duration');
   return result;
 }
 
