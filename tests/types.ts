@@ -1,9 +1,10 @@
 import NodeFire from 'nodefire';
 import firelease, {
   RETRY, TESTABLES, attachWorker, blacklist, defaults, extendLease, listTasksInProgress, pingQueues,
-  settings, shutdown, type Duration, type FireleaseApi, type FireleaseError,
-  type FireleaseErrorDetails, type FireleaseErrorLevel, type FireleaseSettings,
-  type FireleaseStats, type Lease, type LeaseItem, type PingReport, type QueueOptions,
+  settings, shutdown, type CaptureLeaseTransactionMetrics, type Duration, type FireleaseApi,
+  type FireleaseError, type FireleaseErrorDetails, type FireleaseErrorLevel, type FireleaseSettings,
+  type FireleaseStats, type Lease, type LeaseItem, type LeaseTransactionStats, type PingReport,
+  type LeaseTransactionOutcome, type QueueOptions,
   type QueueMode, type QueueRef, type QueueSourceMode, type QueueSourceStats, type QueueStats,
   type RetryDirective, type Worker, type WorkerItem, type WorkerResult
 } from '../src';
@@ -14,6 +15,8 @@ declare const queueRef: NodeFire;
 declare const generatorWorker: () => Generator<unknown, void, unknown>;
 declare const lease: Lease;
 declare const leaseItem: LeaseItem;
+declare const leaseTransactionStats: LeaseTransactionStats;
+declare const leaseTransactionOutcome: LeaseTransactionOutcome;
 declare const workerItem: WorkerItem;
 declare const fireleaseError: FireleaseError;
 declare const pingReport: PingReport;
@@ -33,17 +36,26 @@ declare const worker: Worker;
 declare const workerResult: WorkerResult;
 declare const api: FireleaseApi;
 void [
-  lease, leaseItem, workerItem, fireleaseError, pingReport, queueOptions, duration, errorDetails,
-  errorLevel, fireleaseSettings, fireleaseStats, queueStats, queueSourceStats, queueMode,
+  lease, leaseItem, leaseTransactionStats, leaseTransactionOutcome, workerItem, fireleaseError,
+  pingReport, queueOptions, duration, errorDetails, errorLevel, fireleaseSettings, fireleaseStats,
+  queueStats, queueSourceStats, queueMode,
   queueSourceMode,
   queue, retry, worker, workerResult, api
 ];
 const namedDefaults: QueueOptions = defaults;
 const namedRetry: RetryDirective = RETRY;
 const namedSettings: FireleaseSettings = settings;
+const captureLeaseTransactionMetrics: CaptureLeaseTransactionMetrics = (
+  outcome, tries, transactionDuration
+) => {
+  void [outcome, tries, transactionDuration];
+};
+// @ts-expect-error Lease transaction metric callbacks must be synchronous.
+const asyncLeaseTransactionMetrics: CaptureLeaseTransactionMetrics = async () => undefined;
 void [
   TESTABLES, attachWorker, blacklist, extendLease, listTasksInProgress, pingQueues, shutdown,
-  namedDefaults, namedRetry, namedSettings
+  namedDefaults, namedRetry, namedSettings, captureLeaseTransactionMetrics,
+  asyncLeaseTransactionMetrics
 ];
 TESTABLES.resetBetweenTests();
 
@@ -53,14 +65,21 @@ firelease.attachWorker(queueRef, generatorWorker);
 firelease.attachWorker(queueRef, item => {
   const payload = item.payload;
   const leaseTimeRemaining: number = item.$leaseTimeRemaining;
+  const firstAcquisition: true | undefined = item._lease.firstAcquisition;
   void payload;
   void leaseTimeRemaining;
+  void firstAcquisition;
   return firelease.RETRY;
 });
 
 firelease.attachWorker(
   [queueRef],
-  {bufferSize: Infinity, minLease: '30s', preprocess: item => item},
+  {
+    bufferSize: Infinity,
+    minLease: '30s',
+    preprocess: item => item,
+    captureLeaseTransactionMetrics
+  },
   async item => {await firelease.extendLease(item, '1m');}
 );
 
@@ -72,12 +91,20 @@ firelease.attachWorker(queueRef, {maxLeaseDelay: '1s'}, () => undefined);
 
 firelease.pingQueues(report => {
   const tasksAcquired: number = report.tasksAcquired;
+  const acquired: number = report.leaseTransactions.acquired;
+  const contended: number = report.leaseTransactions.contended;
+  const failed: number = report.leaseTransactions.failed;
+  const tries: number = report.leaseTransactions.tries;
+  const transactionDuration: number = report.leaseTransactions.duration;
   const sickQueues: (string | null)[] = report.sickQueues;
   const sickSources: string[] = report.sickSources;
   const sources: QueueSourceStats[] = report.queues.flatMap(queueResult => queueResult.sources);
   // @ts-expect-error Lease-delay telemetry was removed with the delay mechanism.
   void report.leaseDelays;
-  void [tasksAcquired, sickQueues, sickSources, sources];
+  void [
+    tasksAcquired, acquired, contended, failed, tries, transactionDuration, sickQueues, sickSources,
+    sources
+  ];
 });
 
 firelease.settings.globalMaxConcurrent = 10;
@@ -91,6 +118,11 @@ const aggregateMode: QueueMode = queueStats.mode;
 const aggregateSize: number | null = queueStats.size;
 const aggregateSizeDelta: number | undefined = queueStats.sizeDelta;
 const aggregateSizeTimestamp: number | undefined = queueStats.sizeTimestamp;
+const sourceAcquired: number = queueSourceStats.leaseTransactions.acquired;
+const queueContended: number = queueStats.leaseTransactions.contended;
+const failedLeaseTransactions: number = queueStats.leaseTransactions.failed;
+// @ts-expect-error Lease transaction stats are lifetime totals and cannot be reset.
+queueStats.resetLeaseTransactions();
 // @ts-expect-error Mutable settings are nested under `settings`.
 firelease.globalMaxConcurrent = 10;
 // @ts-expect-error Mutable settings are nested under `settings`.
@@ -100,5 +132,5 @@ const taskUrls: string[] = firelease.listTasksInProgress();
 void shutdownPromise;
 void [
   taskUrls, currentStats, sizeDelta, aggregateMode, aggregateSize, aggregateSizeDelta,
-  aggregateSizeTimestamp
+  aggregateSizeTimestamp, sourceAcquired, queueContended, failedLeaseTransactions
 ];

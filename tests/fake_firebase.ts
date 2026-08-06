@@ -1,5 +1,6 @@
 import assert from 'node:assert';
 import type NodeFire from 'nodefire';
+import type {TransactionMetadata} from 'nodefire';
 
 interface FakeLease {
   [key: string]: unknown;
@@ -92,12 +93,25 @@ export class FakeTaskRef {
   transaction(
     update: (value: FakeTaskValue | null) => FakeTaskValue | null | undefined
   ) {
-    if (this.queueRef.transactionError) return Promise.reject(this.queueRef.transactionError);
-    const previous = clone(this.value);
-    const updated = update(clone(this.value));
-    if (updated !== undefined) this.value = clone(updated);
-    this.queueRef.notifyTaskChange(this, previous);
-    return Promise.resolve(clone(this.value));
+    this.queueRef.beforeTransaction?.(this);
+    const metadata: TransactionMetadata = {
+      outcome: this.queueRef.transactionError ? 'error' : 'commit',
+      tries: this.queueRef.transactionTries,
+      prefetchDuration: this.queueRef.transactionPrefetchDuration,
+      duration: this.queueRef.transactionDuration
+    };
+    let transactionPromise: Promise<FakeTaskValue | null>;
+    if (this.queueRef.transactionError) {
+      transactionPromise = Promise.reject(this.queueRef.transactionError);
+    } else {
+      const previous = clone(this.value);
+      const updated = update(clone(this.value));
+      if (updated !== undefined) this.value = clone(updated);
+      this.queueRef.notifyTaskChange(this, previous);
+      transactionPromise = Promise.resolve(clone(this.value));
+    }
+    return this.queueRef.omitTransactionMetadata ?
+      transactionPromise : Object.assign(transactionPromise, {transaction: metadata});
   }
 
   get() {
@@ -214,6 +228,11 @@ export class FakeQueueRef {
   childrenKeysCalls = 0;
   listenerError?: Error;
   transactionError?: Error;
+  omitTransactionMetadata = false;
+  transactionTries = 1;
+  transactionPrefetchDuration?: number;
+  transactionDuration = 0;
+  beforeTransaction?: (ref: FakeTaskRef) => void;
   fixedNow?: number;
 
   constructor(databaseName: string, readonly path: string) {

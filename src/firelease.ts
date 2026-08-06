@@ -1,6 +1,6 @@
 import _ from 'lodash';
 import ms from 'ms';
-import NodeFire from 'nodefire';
+import NodeFire, {type TransactionMetadata} from 'nodefire';
 import * as timers from 'safe-timers';
 import {
   FireleaseStats, QueueSourceStats, QueueStats, type QueueSourceMode
@@ -14,6 +14,7 @@ const QUEUE_CHECK_TIMEOUT = ms('15s');
 const QUEUE_SIZE_HYSTERESIS = 0.15;
 const QUEUE_SIZE_MISMATCH_THRESHOLD = 100;
 const DEMOTION_JITTER = ms('30s');
+const LEASE_TRANSACTION_DURATION_ALPHA = 0.1;
 
 declare const RETRY_DIRECTIVE: unique symbol;
 
@@ -29,6 +30,10 @@ export interface Lease {
   extendLeasePromise?: Promise<void>;
 }
 
+export type AcquiredLease = Lease & {
+  expiry: number, time: number, attempts: number, initial: number, readonly firstAcquisition?: true
+};
+
 export interface LeaseItem {
   _lease?: Lease;
   [key: string]: any;
@@ -39,7 +44,7 @@ export interface RetryDirective {
 }
 
 export interface WorkerItem extends LeaseItem {
-  _lease: Lease & {expiry: number};
+  _lease: AcquiredLease;
   readonly $ref: NodeFire;
   readonly $leaseTimeRemaining: number;
 }
@@ -69,6 +74,11 @@ export interface FireleaseError extends Error {
   level?: FireleaseErrorLevel;
 }
 
+export type LeaseTransactionOutcome = 'acquired' | 'contended' | 'failed';
+export type CaptureLeaseTransactionMetrics = (
+  outcome: LeaseTransactionOutcome, tries: number, duration: number
+) => undefined;
+
 export interface QueueOptions {
   maxConcurrent?: number;
   bufferSize?: number;
@@ -76,6 +86,7 @@ export interface QueueOptions {
   maxLease?: Duration;
   healthyPingLatency?: Duration;
   preprocess?: (item: LeaseItem) => LeaseItem;
+  captureLeaseTransactionMetrics?: CaptureLeaseTransactionMetrics;
 }
 
 export type PingReport = FireleaseStats;
@@ -121,6 +132,7 @@ interface NormalizedQueueOptions {
   maxLease: number;
   healthyPingLatency: number;
   preprocess?: (item: LeaseItem) => LeaseItem;
+  captureLeaseTransactionMetrics?: CaptureLeaseTransactionMetrics;
 }
 
 const queues: Queue[] = [];
@@ -261,12 +273,16 @@ class Task {
   async process() {
     let startTimestamp = 0;
     let acquired = false;
+    let contended = false;
     let reschedule = true;
+    let firstAcquisition = false;
     this.working = true;
     this.phase = 'lease';
     const transactionPromise = this.ref.transaction(itemValue => {
       const item = itemValue as LeaseItem | null;
       acquired = false;
+      contended = false;
+      firstAcquisition = false;
       if (tasks[this.key] !== this || this.removed) return;
       if (!item || this.ref.key === PING_KEY) {
         acquired = true;
@@ -276,9 +292,11 @@ class Task {
       // console.log('txn  ', this.ref.key, 'lease', item._lease, 'now', startTimestamp);
       // Check if another process beat us to it.
       if (item._lease?.expiry && item._lease.expiry > startTimestamp) {
+        contended = true;
         return item;
       }
       acquired = true;
+      firstAcquisition = _.isNil(item._lease?.initial);
       item._lease ??= {};
       item._lease.time = this.queue.constrainLeaseDuration((item._lease.time ?? 0) * 2);
       item._lease.expiry = startTimestamp + item._lease.time;
@@ -287,14 +305,22 @@ class Task {
       item._lease.busy = true;
       return this.queue.callPreprocess(item);
     }, {detectStuck: 5, prefetchValue: false, timeout: ms('15s')});
+    let transactionCompleted = false;
     try {
       const item = await transactionPromise;
+      transactionCompleted = true;
       if (acquired && item !== null && this.ref.key !== PING_KEY) {
-        if (!_.isObject(item)) throw new Error(`item not an object: ${item}`);
+        this.recordLeaseTransaction('acquired', transactionPromise.transaction);
+        if (firstAcquisition) Object.defineProperty(item._lease, 'firstAcquisition', {value: true});
         this.queue.stats.tasksAcquired++;
         await this.run(item as WorkerItem, startTimestamp);
+      } else if (contended) {
+        this.recordLeaseTransaction('contended', transactionPromise.transaction);
       }
     } catch (error) {
+      if (!transactionCompleted && this.ref.key !== PING_KEY) {
+        this.recordLeaseTransaction('failed', transactionPromise.transaction);
+      }
       reschedule = false;
       // Hardcoded retry -- hard to do anything smarter, since we failed to update the task in
       // Firebase.
@@ -312,6 +338,37 @@ class Task {
       // Wait until Queue.process() releases this task's concurrency slot before re-arming its
       // lease-expiry timer.  Listener swaps can replay the task while it is still working.
       timers.setTimeout(() => {void this.queue.process(this);}, 0);
+    }
+  }
+
+  recordLeaseTransaction(
+    outcome: LeaseTransactionOutcome, transaction: TransactionMetadata | undefined
+  ) {
+    try {
+      const leaseStats = this.source.stats.leaseTransactions;
+      leaseStats[outcome] += 1;
+      if (!transaction?.tries || transaction?.duration === undefined) return;
+      const tries = transaction?.tries;
+      const transactionDuration = (transaction?.prefetchDuration ?? 0) + transaction?.duration;
+      leaseStats.tries += tries;
+      leaseStats.duration = leaseStats.duration === 0 ?
+        transactionDuration || 1 :
+        leaseStats.duration * (1 - LEASE_TRANSACTION_DURATION_ALPHA) +
+          transactionDuration * LEASE_TRANSACTION_DURATION_ALPHA;
+      this.queue.options.captureLeaseTransactionMetrics?.(outcome, tries, transactionDuration);
+    } catch (error) {
+      try {
+        const metricError: FireleaseError = _.isError(error) ? error : new Error(String(error));
+        metricError.firelease = _.assign(
+          metricError.firelease ?? {}, {itemKey: this.key, phase: 'lease-metric'});
+        settings.captureError(metricError);
+      } catch (captureError) {
+        try {
+          console.error('Error capturing lease transaction metric error:', captureError);
+        } catch {
+          // Metric recording must never interrupt task processing.
+        }
+      }
     }
   }
 
@@ -395,7 +452,7 @@ class Task {
         if (currentItem._lease) delete currentItem._lease.busy;
         return currentItem;
       }, {prefetchValue: false}) as LeaseItem | null | undefined;
-      if (item2) item._lease = item2._lease as Lease & {expiry: number};
+      if (item2) item._lease = item2._lease as AcquiredLease;
     } catch (postProcessingError) {
       this.handlePostProcessingError(postProcessingError);
     }
@@ -873,7 +930,7 @@ class QueueSource {
   }
 
   recordPingResult(startedAt: number, succeeded: boolean) {
-    const latency = performance.now() - startedAt;
+    const latency = Math.round(performance.now() - startedAt);
     this.stats.latency = latency;
     this.stats.healthy = succeeded && latency < this.queue.options.healthyPingLatency;
     this.stats.pingTimestamp = Date.now();
@@ -1069,9 +1126,15 @@ class Queue {
  *          control (e.g., webhooks).
  *        healthyPingLatency: {number | string} the maximum response latency to pings that is
  *          considered "healthy" for this queue.
+ *        captureLeaseTransactionMetrics: {function(string, number, number)} a callback invoked
+ *          after each acquired, contended, or failed task lease transaction with its outcome,
+ *          NodeFire transaction tries, and duration in milliseconds.  The callback must be
+ *          synchronous.
  * @param {function(Object):RETRY | number | string | undefined} worker The worker function that
  *        handles enqueued tasks.  It will be given a task object as argument, with a special $ref
- *        attribute set to the Nodefire ref of that task.  The worker can perform arbitrary
+ *        attribute set to the Nodefire ref of that task.  On a task's first acquisition its _lease
+ *        also has a non-enumerable firstAcquisition property set to true; it is not saved to
+ *        Firebase and is absent on subsequent acquisitions.  The worker can perform arbitrary
  *        computation whose duration should not exceed the queue's minLease value.  It can
  *        manipulate the task itself in Firebase as well, e.g. to delete it (to get at-most-once
  *        queue semantics) or otherwise modify it.  The worker can return any of the following:
@@ -1323,6 +1386,7 @@ function resetBetweenTests() {
   queueLoadTimeout = ms('1m');
   shutdownResolve = shutdownReject = shutdownPromise = undefined;
   delete defaults.preprocess;
+  delete defaults.captureLeaseTransactionMetrics;
   _.assign(defaults, {
     maxConcurrent: Number.MAX_VALUE,
     bufferSize: Infinity,

@@ -48,13 +48,20 @@ paths concurrently.
     clean up items written to a queue by a process outside your control (e.g., webhooks).
   * `healthyPingLatency: {number | string}` the maximum response latency to pings that is considered
     "healthy" for this queue.
+  * `captureLeaseTransactionMetrics: {function(string, number, number)}` a callback invoked after
+    each acquired, contended, or failed task lease transaction.  It receives the acquisition
+    outcome, NodeFire transaction tries, and transaction duration in milliseconds.  Missing optional
+    NodeFire metadata is reported as zero.  The callback must be synchronous.  Callback errors are
+    reported through `settings.captureError` and do not affect task processing.
 
 * `@param {function(Object):RETRY | number | string | undefined}` worker The worker function that
   handles enqueued tasks.  It will be given a task object as argument, with a special $ref attribute
-  set to the Nodefire ref of that task.  The worker can perform arbitrary computation whose duration
-  should not exceed the queue's minLease value.  It can manipulate the task itself in Firebase as
-  well, e.g. to delete it (to get at-most-once queue semantics) or otherwise modify it.  The worker
-  can return any of the following:
+  set to the Nodefire ref of that task.  On a task's first acquisition, the worker-facing `_lease`
+  object also has a non-enumerable `firstAcquisition: true` property that is not saved to Firebase;
+  the property is absent on subsequent acquisitions.  The worker can perform arbitrary computation
+  whose duration should not exceed the queue's minLease value.  It can manipulate the task itself in
+  Firebase as well, e.g. to delete it (to get at-most-once queue semantics) or otherwise modify it.
+  The worker can return any of the following:
   * undefined or null to cause the task to be retired from the queue.
   * firelease.RETRY to cause the task to be retried after the current lease expires (and reset the
     lease backoff counter).
@@ -142,8 +149,16 @@ Mutable default option values for all subsequent attachWorker calls.  See that f
 ```stats: {Object}```
 
 The live stats object also passed to the ping callback.  Global fields include `healthy`,
-`sickQueues`, `sickSources`, `stuckTasks`, `maxLatency`, and `tasksAcquired`.  Each entry in `queues`
-includes its own health, latency, acquisition count, and all physical `sources`.  Queue-level
+`sickQueues`, `sickSources`, `stuckTasks`, `maxLatency`, `leaseTransactions`, and the legacy
+`tasksAcquired`.  `leaseTransactions` contains lifetime `acquired`, `contended`, `failed`, and
+`tries` counts for task lease transactions.  `tries` includes failed transactions and comes from
+NodeFire transaction metadata.  `duration` is an exponential moving average of the NodeFire
+transaction duration in milliseconds, using an alpha of 0.1.  These stats are available for every
+physical source.  Logical queue and global counts are additive, while their duration is the average
+of the underlying source or queue duration values that have recorded at least one attempt.  The
+legacy `tasksAcquired` field also remains
+lifetime-cumulative.  Each entry in `queues` includes its own health, latency, leasing totals, and
+all physical `sources`.  Queue-level
 `size` and `sizeDelta` sum their source values when all are known, `sizeTimestamp` is the oldest
 source timestamp, and `mode` is `full`, `safe`, or `mixed`.  Source stats include `connected`,
 current `mode` (`full` or `safe`), last known `size`, `sizeTimestamp` when the size came from a
