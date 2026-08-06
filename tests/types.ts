@@ -50,9 +50,12 @@ const captureLeaseTransactionMetrics: CaptureLeaseTransactionMetrics = (
 ) => {
   void [outcome, tries, transactionDuration];
 };
+// @ts-expect-error Lease transaction metric callbacks must be synchronous.
+const asyncLeaseTransactionMetrics: CaptureLeaseTransactionMetrics = async () => undefined;
 void [
   TESTABLES, attachWorker, blacklist, extendLease, listTasksInProgress, pingQueues, shutdown,
-  namedDefaults, namedRetry, namedSettings, captureLeaseTransactionMetrics
+  namedDefaults, namedRetry, namedSettings, captureLeaseTransactionMetrics,
+  asyncLeaseTransactionMetrics
 ];
 TESTABLES.resetBetweenTests();
 

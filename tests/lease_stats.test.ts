@@ -72,3 +72,33 @@ test('lease stats capture all transaction outcomes through the hierarchy', async
     TESTABLES.resetBetweenTests();
   }
 });
+
+test('metric recording errors cannot interrupt task processing', async () => {
+  TESTABLES.resetBetweenTests();
+  try {
+    const source = new FakeQueueRef('metric-error-database', 'queues/jobs');
+    source.omitTransactionMetadata = true;
+    let captureErrorCalls = 0;
+    firelease.settings.captureError = () => {
+      captureErrorCalls++;
+      throw new Error('Error capture failed');
+    };
+    let workerCalls = 0;
+    firelease.attachWorker(
+      asNodeFire(source),
+      {captureLeaseTransactionMetrics: () => {throw new Error('Metric capture failed');}},
+      () => {workerCalls++;},
+    );
+    const sourceStats = firelease.stats.queues[firelease.stats.queues.length - 1].sources[0];
+
+    const task = source.addTask('acquired', {payload: 'acquired'});
+    await waitFor(() => workerCalls === 1 && !task.value);
+
+    assert.strictEqual(captureErrorCalls, 1);
+    assert.deepStrictEqual(sourceStats.leaseTransactions, {
+      acquired: 1, contended: 0, failed: 0, tries: 0, duration: 0
+    });
+  } finally {
+    TESTABLES.resetBetweenTests();
+  }
+});

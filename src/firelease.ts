@@ -77,7 +77,7 @@ export interface FireleaseError extends Error {
 export type LeaseTransactionOutcome = 'acquired' | 'contended' | 'failed';
 export type CaptureLeaseTransactionMetrics = (
   outcome: LeaseTransactionOutcome, tries: number, duration: number
-) => void;
+) => undefined;
 
 export interface QueueOptions {
   maxConcurrent?: number;
@@ -342,25 +342,36 @@ class Task {
   }
 
   recordLeaseTransaction(
-    outcome: LeaseTransactionOutcome, transaction: TransactionMetadata
+    outcome: LeaseTransactionOutcome, transaction: TransactionMetadata | undefined
   ) {
-    const tries = transaction.tries ?? 0;
-    const transactionDuration = transaction.duration ?? 0;
-    const leaseStats = this.source.stats.leaseTransactions;
-    const priorAttempts = leaseStats.acquired + leaseStats.contended + leaseStats.failed;
-    leaseStats[outcome] += 1;
-    leaseStats.tries += tries;
-    leaseStats.duration = priorAttempts === 0 ?
-      transactionDuration :
-      leaseStats.duration * (1 - LEASE_TRANSACTION_DURATION_ALPHA) +
-        transactionDuration * LEASE_TRANSACTION_DURATION_ALPHA;
     try {
+      if (!transaction?.outcome || !transaction?.tries || transaction?.duration === undefined) {
+        return;
+      }
+      const tries = transaction?.tries;
+      const transactionDuration = (transaction?.prefetchDuration ?? 0) + transaction?.duration;
+      const leaseStats = this.source.stats.leaseTransactions;
+      const priorAttempts = leaseStats.acquired + leaseStats.contended + leaseStats.failed;
+      leaseStats[outcome] += 1;
+      leaseStats.tries += tries;
+      leaseStats.duration = priorAttempts === 0 ?
+        transactionDuration :
+        leaseStats.duration * (1 - LEASE_TRANSACTION_DURATION_ALPHA) +
+          transactionDuration * LEASE_TRANSACTION_DURATION_ALPHA;
       this.queue.options.captureLeaseTransactionMetrics?.(outcome, tries, transactionDuration);
     } catch (error) {
-      error.firelease = _.assign(error.firelease ?? {}, {
-        itemKey: this.key, phase: 'lease-metric'
-      });
-      settings.captureError(error);
+      try {
+        const metricError: FireleaseError = _.isError(error) ? error : new Error(String(error));
+        metricError.firelease = _.assign(
+          metricError.firelease ?? {}, {itemKey: this.key, phase: 'lease-metric'});
+        settings.captureError(metricError);
+      } catch (captureError) {
+        try {
+          console.error('Error capturing lease transaction metric error:', captureError);
+        } catch {
+          // Metric recording must never interrupt task processing.
+        }
+      }
     }
   }
 
@@ -1120,7 +1131,8 @@ class Queue {
  *          considered "healthy" for this queue.
  *        captureLeaseTransactionMetrics: {function(string, number, number)} a callback invoked
  *          after each acquired, contended, or failed task lease transaction with its outcome,
- *          NodeFire transaction tries, and duration in milliseconds.
+ *          NodeFire transaction tries, and duration in milliseconds.  The callback must be
+ *          synchronous.
  * @param {function(Object):RETRY | number | string | undefined} worker The worker function that
  *        handles enqueued tasks.  It will be given a task object as argument, with a special $ref
  *        attribute set to the Nodefire ref of that task.  On a task's first acquisition its _lease
