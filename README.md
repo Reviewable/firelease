@@ -51,8 +51,8 @@ paths concurrently.
   * `captureLeaseTransactionMetrics: {function(string, number, number)}` a callback invoked after
     each acquired, contended, or failed task lease transaction.  It receives the acquisition
     outcome, NodeFire transaction tries, and transaction duration in milliseconds.  Missing optional
-    NodeFire metadata is reported as zero.  Callback errors are reported through
-    `settings.captureError` and do not affect task processing.
+    NodeFire metadata is reported as zero.  The callback must be synchronous.  Callback errors are
+    reported through `settings.captureError` and do not affect task processing.
 
 * `@param {function(Object):RETRY | number | string | undefined}` worker The worker function that
   handles enqueued tasks.  It will be given a task object as argument, with a special $ref attribute
@@ -155,8 +155,8 @@ The live stats object also passed to the ping callback.  Global fields include `
 NodeFire transaction metadata.  `duration` is an exponential moving average of the NodeFire
 transaction duration in milliseconds, using an alpha of 0.1.  These stats are available for every
 physical source.  Logical queue and global counts are additive, while their duration is the average
-of the underlying duration values weighted by each source or queue's total lease attempts
-(`acquired + contended + failed`).  The legacy `tasksAcquired` field also remains
+of the underlying source or queue duration values that have recorded at least one attempt.  The
+legacy `tasksAcquired` field also remains
 lifetime-cumulative.  Each entry in `queues` includes its own health, latency, leasing totals, and
 all physical `sources`.  Queue-level
 `size` and `sizeDelta` sum their source values when all are known, `sizeTimestamp` is the oldest
