@@ -5,7 +5,7 @@ import {FireleaseStats, QueueSourceStats, QueueStats, TESTABLES} from '../src';
 
 test('stats are derived through the hierarchy on demand', () => {
   TESTABLES.resetBetweenTests();
-  const expectedDuration = 450 / 11;
+  const expectedDuration = 40;
   let stuckTasks = 0;
   const sourceStats = new QueueSourceStats('https://stats.example.test/queues/jobs');
   const secondSourceStats = new QueueSourceStats('https://second.example.test/queues/jobs');
@@ -121,7 +121,7 @@ test('stats are derived through the hierarchy on demand', () => {
   TESTABLES.resetBetweenTests();
 });
 
-test('duration rollups are weighted by total lease attempts at each level', () => {
+test('duration rollups use an unweighted mean at each level', () => {
   const firstSource = new QueueSourceStats('https://first.example.test/queues/jobs');
   firstSource.leaseTransactions.acquired = 1;
   firstSource.leaseTransactions.contended = 2;
@@ -129,22 +129,23 @@ test('duration rollups are weighted by total lease attempts at each level', () =
   const secondSource = new QueueSourceStats('https://second.example.test/queues/jobs');
   secondSource.leaseTransactions.failed = 1;
   secondSource.leaseTransactions.duration = 80;
+  const idleSource = new QueueSourceStats('https://idle.example.test/queues/jobs');
   const firstQueue = new QueueStats('https://first.example.test/queues/jobs', 'jobs', [
-    firstSource, secondSource
+    firstSource, secondSource, idleSource
   ]);
 
   const thirdSource = new QueueSourceStats('https://third.example.test/queues/other');
   thirdSource.leaseTransactions.acquired = 2;
   thirdSource.leaseTransactions.contended = 1;
   thirdSource.leaseTransactions.failed = 1;
-  thirdSource.leaseTransactions.duration = 50;
+  thirdSource.leaseTransactions.duration = 30;
   const secondQueue = new QueueStats(
     'https://third.example.test/queues/other', 'other', [thirdSource]);
 
   const hierarchyStats = new FireleaseStats(() => 0);
   hierarchyStats.queues.push(firstQueue, secondQueue);
 
-  assert.strictEqual(firstQueue.leaseTransactions.duration, 35);
-  assert.strictEqual(secondQueue.leaseTransactions.duration, 50);
-  assert.strictEqual(hierarchyStats.leaseTransactions.duration, 42.5);
+  assert.strictEqual(firstQueue.leaseTransactions.duration, 50);
+  assert.strictEqual(secondQueue.leaseTransactions.duration, 30);
+  assert.strictEqual(hierarchyStats.leaseTransactions.duration, 40);
 });

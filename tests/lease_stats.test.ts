@@ -9,6 +9,7 @@ test('lease stats capture all transaction outcomes through the hierarchy', async
   try {
     const source = new FakeQueueRef('lease-stats-database', 'queues/jobs');
     source.transactionTries = 3;
+    source.transactionPrefetchDuration = 5;
     source.transactionDuration = 25;
     const capturedMetrics: [LeaseTransactionOutcome, number, number][] = [];
     const capturedErrors: Error[] = [];
@@ -34,6 +35,7 @@ test('lease stats capture all transaction outcomes through the hierarchy', async
     await waitFor(() => workerCalls === 1 && !acquiredTask.value);
 
     source.transactionTries = 2;
+    source.transactionPrefetchDuration = undefined;
     source.transactionDuration = 10;
     source.beforeTransaction = task => {
       source.beforeTransaction = undefined;
@@ -51,7 +53,7 @@ test('lease stats capture all transaction outcomes through the hierarchy', async
     const expectedCounts = {acquired: 1, contended: 1, failed: 1, tries: 9};
     assert.strictEqual(workerCalls, 1);
     assert.deepStrictEqual(capturedMetrics, [
-      ['acquired', 3, 25],
+      ['acquired', 3, 30],
       ['contended', 2, 10],
       ['failed', 4, 50]
     ]);
@@ -64,10 +66,65 @@ test('lease stats capture all transaction outcomes through the hierarchy', async
     ]) {
       const {duration, ...counts} = stats;
       assert.deepStrictEqual(counts, expectedCounts);
-      assert.ok(Math.abs(duration - 26.15) < Number.EPSILON * 26.15);
+      assert.ok(Math.abs(duration - 30.2) < Number.EPSILON * 30.2);
     }
     assert.strictEqual(queueStats.tasksAcquired, 1);
     assert.strictEqual(firelease.stats.tasksAcquired, 1);
+  } finally {
+    TESTABLES.resetBetweenTests();
+  }
+});
+
+test('metric recording errors cannot interrupt task processing', async () => {
+  TESTABLES.resetBetweenTests();
+  try {
+    const source = new FakeQueueRef('metric-error-database', 'queues/jobs');
+    let captureErrorCalls = 0;
+    firelease.settings.captureError = () => {
+      captureErrorCalls++;
+      throw new Error('Error capture failed');
+    };
+    let workerCalls = 0;
+    firelease.attachWorker(
+      asNodeFire(source),
+      {captureLeaseTransactionMetrics: () => {throw new Error('Metric capture failed');}},
+      () => {workerCalls++;},
+    );
+    const sourceStats = firelease.stats.queues[firelease.stats.queues.length - 1].sources[0];
+
+    const task = source.addTask('acquired', {payload: 'acquired'});
+    await waitFor(() => workerCalls === 1 && !task.value);
+
+    assert.strictEqual(captureErrorCalls, 1);
+    assert.deepStrictEqual(sourceStats.leaseTransactions, {
+      acquired: 1, contended: 0, failed: 0, tries: 1, duration: 0
+    });
+  } finally {
+    TESTABLES.resetBetweenTests();
+  }
+});
+
+test('missing transaction metadata only records the outcome', async () => {
+  TESTABLES.resetBetweenTests();
+  try {
+    const source = new FakeQueueRef('missing-metadata-database', 'queues/jobs');
+    source.omitTransactionMetadata = true;
+    let metricCalls = 0;
+    let workerCalls = 0;
+    firelease.attachWorker(
+      asNodeFire(source),
+      {captureLeaseTransactionMetrics: () => {metricCalls++;}},
+      () => {workerCalls++;},
+    );
+    const sourceStats = firelease.stats.queues[firelease.stats.queues.length - 1].sources[0];
+
+    const task = source.addTask('acquired', {payload: 'acquired'});
+    await waitFor(() => workerCalls === 1 && !task.value);
+
+    assert.strictEqual(metricCalls, 0);
+    assert.deepStrictEqual(sourceStats.leaseTransactions, {
+      acquired: 1, contended: 0, failed: 0, tries: 0, duration: 0
+    });
   } finally {
     TESTABLES.resetBetweenTests();
   }
