@@ -484,6 +484,8 @@ class QueueCheckQueue {
   draining = false;
   previousDuration = 0;
   previousFinishedAt = 0;
+  cooldownTimer?: timers.Timeout;
+  cooldownResolve?: () => void;
 
   enqueue(source: QueueSource, description: string, epoch: number, run: () => Promise<void>) {
     const duplicate =
@@ -504,8 +506,17 @@ class QueueCheckQueue {
 
   reset() {
     _.forEach(this.jobs.splice(0), job => {job.resolve();});
+    this.cancelCooldown();
+  }
+
+  cancelCooldown() {
     this.previousDuration = 0;
     this.previousFinishedAt = 0;
+    this.cooldownTimer?.clear();
+    this.cooldownTimer = undefined;
+    const resolve = this.cooldownResolve;
+    this.cooldownResolve = undefined;
+    resolve?.();
   }
 
   async drain() {
@@ -524,8 +535,11 @@ class QueueCheckQueue {
         const now = performance.now();
         if (minimumStart > now) {
           await new Promise<void>(resolve => {
-            timers.setTimeout(resolve, minimumStart - now);
+            this.cooldownResolve = resolve;
+            this.cooldownTimer = timers.setTimeout(resolve, minimumStart - now);
           });
+          this.cooldownTimer = undefined;
+          this.cooldownResolve = undefined;
         }
 
         if (!job.source.isCurrent(job.epoch)) {
@@ -543,8 +557,10 @@ class QueueCheckQueue {
             {description: job.description});
         } finally {
           const finishedAt = performance.now();
-          this.previousDuration = finishedAt - start;
-          this.previousFinishedAt = finishedAt;
+          if (job.source.isCurrent(job.epoch)) {
+            this.previousDuration = finishedAt - start;
+            this.previousFinishedAt = finishedAt;
+          }
           this.active = undefined;
           job.resolve();
         }
@@ -650,6 +666,7 @@ class QueueSource {
   epoch = 0;
   connected = false;
   crashing = false;
+  connectionStartedAt = 0;
   activeListener?: QueueListener;
   checkTimer?: timers.Timeout;
   demotionTimer?: timers.Timeout;
@@ -682,8 +699,10 @@ class QueueSource {
     this.cancelPendingWork();
     if (connected) {
       this.stats.healthy = true;
+      this.connectionStartedAt = performance.now();
       void this.enqueueStartup(epoch);
     } else {
+      queueCheckQueue.cancelCooldown();
       this.activeListener?.stop();
       this.activeListener = undefined;
       this.clearTasks();
@@ -721,7 +740,10 @@ class QueueSource {
       const loadedMode = await this.loadListener(targetMode, epoch, 'startup');
       if (!loadedMode) return;
       const loadedTaskCount = this.activeListener?.snapshots.size ?? 0;
-      console.log(`Queue worker ${this.ref} loaded ${loadedTaskCount} tasks in ${loadedMode} mode`);
+      const connectionDuration = Math.round(performance.now() - this.connectionStartedAt);
+      console.log(
+        `Queue worker ${this.ref} loaded ${loadedTaskCount} tasks in ${loadedMode} mode` +
+        ` (${ms(connectionDuration)})`);
       if (loadedMode === 'safe') this.scheduleSafeCheck();
       this.initialStartupComplete = true;
     } catch (e) {
