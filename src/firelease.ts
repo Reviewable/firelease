@@ -6,11 +6,12 @@ import {
   FireleaseStats, QueueSourceStats, QueueStats, type QueueSourceMode
 } from './stats';
 
-export const TESTABLES = {resetBetweenTests, waitUntilDeleted};
+export const TESTABLES = {resetBetweenTests, waitUntilDeleted, getQueueCheckCooldown};
 
 const PING_INTERVAL = ms('1m');
 const PING_KEY = 'ping';
 const QUEUE_CHECK_TIMEOUT = ms('15s');
+const MAX_QUEUE_CHECK_COOLDOWN = ms('30s');
 const QUEUE_SIZE_HYSTERESIS = 0.15;
 const QUEUE_SIZE_MISMATCH_THRESHOLD = 100;
 const DEMOTION_JITTER = ms('30s');
@@ -478,14 +479,16 @@ interface QueueCheckJob {
 
 type QueueLoadResult = 'loaded' | 'stopped' | 'timed-out';
 
+function getQueueCheckCooldown(previousDuration: number) {
+  return Math.min(previousDuration, MAX_QUEUE_CHECK_COOLDOWN);
+}
+
 class QueueCheckQueue {
   jobs: QueueCheckJob[] = [];
   active?: QueueCheckJob;
   draining = false;
   previousDuration = 0;
   previousFinishedAt = 0;
-  cooldownTimer?: timers.Timeout;
-  cooldownResolve?: () => void;
 
   enqueue(source: QueueSource, description: string, epoch: number, run: () => Promise<void>) {
     const duplicate =
@@ -506,17 +509,8 @@ class QueueCheckQueue {
 
   reset() {
     _.forEach(this.jobs.splice(0), job => {job.resolve();});
-    this.cancelCooldown();
-  }
-
-  cancelCooldown() {
     this.previousDuration = 0;
     this.previousFinishedAt = 0;
-    this.cooldownTimer?.clear();
-    this.cooldownTimer = undefined;
-    const resolve = this.cooldownResolve;
-    this.cooldownResolve = undefined;
-    resolve?.();
   }
 
   async drain() {
@@ -531,15 +525,13 @@ class QueueCheckQueue {
         }
 
         // Don't exceed a 50% duty cycle.
-        const minimumStart = this.previousFinishedAt + this.previousDuration;
+        const minimumStart =
+          this.previousFinishedAt + getQueueCheckCooldown(this.previousDuration);
         const now = performance.now();
         if (minimumStart > now) {
           await new Promise<void>(resolve => {
-            this.cooldownResolve = resolve;
-            this.cooldownTimer = timers.setTimeout(resolve, minimumStart - now);
+            timers.setTimeout(resolve, minimumStart - now);
           });
-          this.cooldownTimer = undefined;
-          this.cooldownResolve = undefined;
         }
 
         if (!job.source.isCurrent(job.epoch)) {
@@ -557,10 +549,8 @@ class QueueCheckQueue {
             {description: job.description});
         } finally {
           const finishedAt = performance.now();
-          if (job.source.isCurrent(job.epoch)) {
-            this.previousDuration = finishedAt - start;
-            this.previousFinishedAt = finishedAt;
-          }
+          this.previousDuration = finishedAt - start;
+          this.previousFinishedAt = finishedAt;
           this.active = undefined;
           job.resolve();
         }
@@ -702,7 +692,6 @@ class QueueSource {
       this.connectionStartedAt = performance.now();
       void this.enqueueStartup(epoch);
     } else {
-      queueCheckQueue.cancelCooldown();
       this.activeListener?.stop();
       this.activeListener = undefined;
       this.clearTasks();

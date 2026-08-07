@@ -205,7 +205,7 @@ test('a promotion re-arms a replayed working task after it finishes', async () =
   }
 });
 
-test('disconnect cancels the queue check cooldown', async () => {
+test('queue check cooldowns are capped and survive disconnects', async () => {
   TESTABLES.resetBetweenTests();
   const originalConsoleLog = console.log;
   const logMessages: string[] = [];
@@ -214,6 +214,7 @@ test('disconnect cancels the queue check cooldown', async () => {
     firelease.settings.safeQueueSize = 10;
     firelease.settings.queueCheckInterval = '30d';
     firelease.settings.globalMaxConcurrent = 0;
+    assert.strictEqual(TESTABLES.getQueueCheckCooldown(60_000), 30_000);
 
     const slowSource = new FakeQueueRef('slow-startup-database', 'queues/slow-startup');
     slowSource.deferNextValue = true;
@@ -237,7 +238,9 @@ test('disconnect cancels the queue check cooldown', async () => {
 
     reconnectingSource.databaseRoot.setConnected(false);
     reconnectingSource.databaseRoot.setConnected(true);
-    await waitFor(() => reconnectingSource.childrenKeysCalls === 1, 250);
+    await new Promise(resolve => {setTimeout(resolve, 100);});
+    assert.strictEqual(reconnectingSource.childrenKeysCalls, 0);
+    await waitFor(() => reconnectingSource.childrenKeysCalls === 1);
   } finally {
     console.log = originalConsoleLog;
     TESTABLES.resetBetweenTests();
