@@ -204,3 +204,45 @@ test('a promotion re-arms a replayed working task after it finishes', async () =
     TESTABLES.resetBetweenTests();
   }
 });
+
+test('queue check cooldowns are capped and survive disconnects', async () => {
+  TESTABLES.resetBetweenTests();
+  const originalConsoleLog = console.log;
+  const logMessages: string[] = [];
+  console.log = (...args: unknown[]) => {logMessages.push(args.map(String).join(' '));};
+  try {
+    firelease.settings.safeQueueSize = 10;
+    firelease.settings.queueCheckInterval = '30d';
+    firelease.settings.globalMaxConcurrent = 0;
+    assert.strictEqual(TESTABLES.getQueueCheckCooldown(60_000), 30_000);
+
+    const slowSource = new FakeQueueRef('slow-startup-database', 'queues/slow-startup');
+    slowSource.deferNextValue = true;
+    firelease.attachWorker(asNodeFire(slowSource), {bufferSize: Infinity}, () => undefined);
+    await waitFor(() => slowSource.deferredValueCallbacks.length === 1);
+    await new Promise(resolve => {setTimeout(resolve, 500);});
+    slowSource.releaseDeferredValues();
+    await waitFor(() => logMessages.some(message => message.includes(slowSource.toString())));
+
+    const connectionLog = logMessages.find(message => message.includes(slowSource.toString()))!;
+    assert.match(connectionLog, /loaded 0 tasks in full mode \(\S+\)$/);
+
+    const reconnectingSource =
+      new FakeQueueRef('reconnecting-database', 'queues/reconnecting');
+    reconnectingSource.databaseRoot.connected = false;
+    firelease.attachWorker(
+      asNodeFire(reconnectingSource), {bufferSize: Infinity}, () => undefined);
+    reconnectingSource.databaseRoot.setConnected(true);
+    await new Promise(resolve => {setTimeout(resolve, 25);});
+    assert.strictEqual(reconnectingSource.childrenKeysCalls, 0);
+
+    reconnectingSource.databaseRoot.setConnected(false);
+    reconnectingSource.databaseRoot.setConnected(true);
+    await new Promise(resolve => {setTimeout(resolve, 100);});
+    assert.strictEqual(reconnectingSource.childrenKeysCalls, 0);
+    await waitFor(() => reconnectingSource.childrenKeysCalls === 1);
+  } finally {
+    console.log = originalConsoleLog;
+    TESTABLES.resetBetweenTests();
+  }
+});

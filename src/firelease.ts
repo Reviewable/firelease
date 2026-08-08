@@ -6,11 +6,12 @@ import {
   FireleaseStats, QueueSourceStats, QueueStats, type QueueSourceMode
 } from './stats';
 
-export const TESTABLES = {resetBetweenTests, waitUntilDeleted};
+export const TESTABLES = {resetBetweenTests, waitUntilDeleted, getQueueCheckCooldown};
 
 const PING_INTERVAL = ms('1m');
 const PING_KEY = 'ping';
 const QUEUE_CHECK_TIMEOUT = ms('15s');
+const MAX_QUEUE_CHECK_COOLDOWN = ms('30s');
 const QUEUE_SIZE_HYSTERESIS = 0.15;
 const QUEUE_SIZE_MISMATCH_THRESHOLD = 100;
 const DEMOTION_JITTER = ms('30s');
@@ -478,6 +479,10 @@ interface QueueCheckJob {
 
 type QueueLoadResult = 'loaded' | 'stopped' | 'timed-out';
 
+function getQueueCheckCooldown(previousDuration: number) {
+  return Math.min(previousDuration, MAX_QUEUE_CHECK_COOLDOWN);
+}
+
 class QueueCheckQueue {
   jobs: QueueCheckJob[] = [];
   active?: QueueCheckJob;
@@ -520,7 +525,8 @@ class QueueCheckQueue {
         }
 
         // Don't exceed a 50% duty cycle.
-        const minimumStart = this.previousFinishedAt + this.previousDuration;
+        const minimumStart =
+          this.previousFinishedAt + getQueueCheckCooldown(this.previousDuration);
         const now = performance.now();
         if (minimumStart > now) {
           await new Promise<void>(resolve => {
@@ -650,6 +656,7 @@ class QueueSource {
   epoch = 0;
   connected = false;
   crashing = false;
+  connectionStartedAt = 0;
   activeListener?: QueueListener;
   checkTimer?: timers.Timeout;
   demotionTimer?: timers.Timeout;
@@ -682,6 +689,7 @@ class QueueSource {
     this.cancelPendingWork();
     if (connected) {
       this.stats.healthy = true;
+      this.connectionStartedAt = performance.now();
       void this.enqueueStartup(epoch);
     } else {
       this.activeListener?.stop();
@@ -721,7 +729,10 @@ class QueueSource {
       const loadedMode = await this.loadListener(targetMode, epoch, 'startup');
       if (!loadedMode) return;
       const loadedTaskCount = this.activeListener?.snapshots.size ?? 0;
-      console.log(`Queue worker ${this.ref} loaded ${loadedTaskCount} tasks in ${loadedMode} mode`);
+      const connectionDuration = Math.round(performance.now() - this.connectionStartedAt);
+      console.log(
+        `Queue worker ${this.ref} loaded ${loadedTaskCount} tasks in ${loadedMode} mode` +
+        ` (${ms(connectionDuration)})`);
       if (loadedMode === 'safe') this.scheduleSafeCheck();
       this.initialStartupComplete = true;
     } catch (e) {
