@@ -1,6 +1,6 @@
 {
   "name": "firelease",
-  "version": "4.3.1",
+  "version": "5.0.0",
   "packageManager": "yarn@4.13.0",
   "description": "Firebase queue consumer for Node with at-least-once semantics",
   "main": "built/index.js",
@@ -38,7 +38,7 @@
     "firebase-childrenkeys": "^3.3.0",
     "lodash": "4.x",
     "ms": "2.x",
-    "nodefire": "^7.1.0",
+    "nodefire": "^7.2.0",
     "safe-timers": "^1.1.0"
   },
   "devDependencies": {

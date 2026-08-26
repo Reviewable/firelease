@@ -1,7 +1,7 @@
 import assert from 'node:assert';
 import {test} from 'node:test';
 
-import firelease, {TESTABLES, type LeaseTransactionOutcome} from '../src';
+import firelease, {TESTABLES, type FireleaseError, type LeaseTransactionOutcome} from '../src';
 import {asNodeFire, FakeQueueRef, waitFor} from './fake_firebase';
 
 test('lease stats capture all transaction outcomes through the hierarchy', async () => {
@@ -30,6 +30,7 @@ test('lease stats capture all transaction outcomes through the hierarchy', async
     );
     const queueStats = firelease.stats.queues[firelease.stats.queues.length - 1];
     const sourceStats = queueStats.sources[0];
+    await firelease.start();
 
     const acquiredTask = source.addTask('acquired', {payload: 'acquired'});
     await waitFor(() => workerCalls === 1 && !acquiredTask.value);
@@ -59,7 +60,7 @@ test('lease stats capture all transaction outcomes through the hierarchy', async
     ]);
     assert.deepStrictEqual(
       capturedErrors.map(error => error.message),
-      ['Metric capture failed', 'Lease transaction failed'],
+      ['Metric capture failed'],
     );
     for (const stats of [
       sourceStats.leaseTransactions, queueStats.leaseTransactions, firelease.stats.leaseTransactions
@@ -91,6 +92,7 @@ test('metric recording errors cannot interrupt task processing', async () => {
       () => {workerCalls++;},
     );
     const sourceStats = firelease.stats.queues[firelease.stats.queues.length - 1].sources[0];
+    await firelease.start();
 
     const task = source.addTask('acquired', {payload: 'acquired'});
     await waitFor(() => workerCalls === 1 && !task.value);
@@ -117,6 +119,7 @@ test('missing transaction metadata only records the outcome', async () => {
       () => {workerCalls++;},
     );
     const sourceStats = firelease.stats.queues[firelease.stats.queues.length - 1].sources[0];
+    await firelease.start();
 
     const task = source.addTask('acquired', {payload: 'acquired'});
     await waitFor(() => workerCalls === 1 && !task.value);
@@ -125,6 +128,41 @@ test('missing transaction metadata only records the outcome', async () => {
     assert.deepStrictEqual(sourceStats.leaseTransactions, {
       acquired: 1, contended: 0, failed: 0, tries: 0, duration: 0
     });
+  } finally {
+    TESTABLES.resetBetweenTests();
+  }
+});
+
+test('lease transaction failures back off exponentially and report from the third', async () => {
+  TESTABLES.resetBetweenTests();
+  const capturedErrors: Error[] = [];
+  try {
+    firelease.settings.initialTaskStartRate = 50;
+    firelease.settings.captureError = error => {capturedErrors.push(error);};
+    const source = new FakeQueueRef('lease-backoff-database', 'queues/jobs');
+    source.transactionError = new Error('Permission denied');
+    const attemptTimes: number[] = [];
+    source.beforeTransaction = () => {attemptTimes.push(performance.now());};
+    firelease.attachWorker(asNodeFire(source), () => undefined);
+    const sourceStats = firelease.stats.queues[firelease.stats.queues.length - 1].sources[0];
+    await firelease.start();
+
+    const task = source.addTask('failed', {payload: 'failed'});
+    await waitFor(() => attemptTimes.length === 3 && capturedErrors.length === 1, 6000);
+
+    assert(attemptTimes[1] - attemptTimes[0] >= 900);
+    assert(attemptTimes[2] - attemptTimes[1] >= 1900);
+    assert.strictEqual(sourceStats.leaseTransactions.failed, 3);
+    assert.strictEqual(capturedErrors[0].message, 'Firelease lease transaction failed');
+    assert.deepStrictEqual((capturedErrors[0] as FireleaseError).firelease, {
+      cause: 'Permission denied',
+      code: 'lease-transaction-failed',
+      count: 3,
+      itemKey: task.toString(),
+      phase: 'leasing',
+      retryDelay: 4000
+    });
+    await task.remove();
   } finally {
     TESTABLES.resetBetweenTests();
   }

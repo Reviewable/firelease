@@ -23,20 +23,18 @@ test('logical queues coordinate sources, leases, and task controls', async () =>
 
     firelease.attachWorker(
       [asNodeFire(firstSource), asNodeFire(secondSource)],
-      {bufferSize: Infinity, maxConcurrent: 1, minLease: '1s'},
+      {bufferSize: Infinity, minLease: '1s'},
       async item => {
         active++;
         maxActive = Math.max(maxActive, active);
         calls.push(item.$ref.toString());
         leaseTimesRemaining.push(item.$leaseTimeRemaining);
-        if (calls.length === 1) {
-          await firstBlocked;
-          active--;
-          return;
-        }
+        if (calls.length === 1) await firstBlocked;
         active--;
       }
     );
+    firelease.limitTasksInFlight(1);
+    await firelease.start();
 
     const firstTask = firstSource.addTask('task', {payload: 1});
     const secondTask = secondSource.addTask('task', {payload: 2});
@@ -47,7 +45,7 @@ test('logical queues coordinate sources, leases, and task controls', async () =>
     assert.strictEqual(firelease.blacklist(blacklistedTask.toString()), true);
     assert.strictEqual(firelease.blacklist(blacklistedTask.toString()), false);
     await new Promise(resolve => {setTimeout(resolve, 50);});
-    assert.strictEqual(calls.length, 1, 'logical maxConcurrent must cover every source');
+    assert.strictEqual(calls.length, 1, 'the global in-flight limit must cover every source');
 
     releaseFirst();
     await waitFor(() => calls.length === 2 && !firstTask.value && !secondTask.value);
@@ -57,34 +55,30 @@ test('logical queues coordinate sources, leases, and task controls', async () =>
     assert(leaseTimesRemaining.every(time => time > 0));
     assert.strictEqual(maxActive, 1);
     assert.deepStrictEqual(firelease.listTasksInProgress(), []);
+  } finally {
+    TESTABLES.resetBetweenTests();
+  }
+});
 
+test('legacy, duplicate-source, and extension behavior survives explicit startup', async () => {
+  TESTABLES.resetBetweenTests();
+  try {
     const legacySource = new FakeQueueRef('legacy-database', 'queues/legacy');
     let legacyTaskUrl: string | undefined;
     firelease.attachWorker(asNodeFire(legacySource), item => {
       legacyTaskUrl = item.$ref.toString();
       assert(Number.isFinite(item.$leaseTimeRemaining));
     });
-    const legacyTask = legacySource.addTask('task', {payload: 3});
-    await waitFor(() => legacyTaskUrl !== undefined && !legacyTask.value);
-    assert.strictEqual(legacyTaskUrl, legacyTask.toString());
 
     const duplicateSource = new FakeQueueRef('duplicate-database', 'queues/duplicate');
     let duplicateTaskUrl: string | undefined;
     firelease.attachWorker(
       [asNodeFire(duplicateSource), asNodeFire(duplicateSource)],
       {bufferSize: Infinity},
-      item => {
-        duplicateTaskUrl = item.$ref.toString();
-      }
+      item => {duplicateTaskUrl = item.$ref.toString();}
     );
-    await waitFor(() => duplicateSource.listeners.child_added?.length === 1);
-    assert.strictEqual(duplicateSource.listeners.child_added.length, 1);
-    const duplicateTask = duplicateSource.addTask('task', {payload: 4});
-    await waitFor(() => duplicateTaskUrl !== undefined && !duplicateTask.value);
-    assert.strictEqual(duplicateTaskUrl, duplicateTask.toString());
 
     const extensionSource = new FakeQueueRef('extension-database', 'queues/extension');
-    // Exercise the exact-boundary path where the first extension already satisfies the second.
     extensionSource.fixedNow = Date.now();
     let extensionComplete = false;
     firelease.attachWorker(asNodeFire(extensionSource), {minLease: '1s'}, async item => {
@@ -96,8 +90,18 @@ test('logical queues coordinate sources, leases, and task controls', async () =>
       assert(item._lease.expiry >= secondExtensionTimestamp + 3000);
       extensionComplete = true;
     });
+
+    await firelease.start();
+    assert.strictEqual(duplicateSource.listeners.child_added.length, 1);
+
+    const legacyTask = legacySource.addTask('task', {payload: 3});
+    const duplicateTask = duplicateSource.addTask('task', {payload: 4});
     const extensionTask = extensionSource.addTask('task', {payload: 5});
+    await waitFor(() => legacyTaskUrl !== undefined && !legacyTask.value);
+    await waitFor(() => duplicateTaskUrl !== undefined && !duplicateTask.value);
     await waitFor(() => extensionComplete && !extensionTask.value);
+    assert.strictEqual(legacyTaskUrl, legacyTask.toString());
+    assert.strictEqual(duplicateTaskUrl, duplicateTask.toString());
   } finally {
     TESTABLES.resetBetweenTests();
   }

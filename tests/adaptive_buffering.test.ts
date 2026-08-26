@@ -4,245 +4,203 @@ import {test} from 'node:test';
 import firelease, {TESTABLES, type FireleaseError} from '../src';
 import {asNodeFire, FakeQueueRef, waitFor} from './fake_firebase';
 
-test('adaptive sources probe, promote, demote, and recover independently', async () => {
+test('finite buffers bypass sizing while adaptive sources probe and reconnect', async () => {
   TESTABLES.resetBetweenTests();
-  const capturedErrors: FireleaseError[] = [];
-  const originalRandom = Math.random;
-  Math.random = () => 0;
   try {
     firelease.settings.safeQueueSize = 10;
-    assert.throws(
-      () => {firelease.settings.queueCheckInterval = 0;},
-      /queueCheckInterval must be a positive finite duration/);
-    assert.throws(
-      () => {firelease.settings.queueCheckInterval = 'invalid';},
-      /queueCheckInterval must be a positive finite duration/);
-    firelease.settings.queueCheckInterval = 20;
-    firelease.settings.captureError = error => {capturedErrors.push(error);};
-    firelease.settings.globalMaxConcurrent = 0;
+    firelease.settings.queueCheckInterval = '30d';
+    firelease.limitTasksInFlight(0);
 
-    const explicitlyBufferedSource =
-      new FakeQueueRef('explicit-buffer-database', 'queues/explicit');
-    firelease.attachWorker(
-      asNodeFire(explicitlyBufferedSource), {bufferSize: 20}, () => undefined);
-    const explicitlyBufferedStats =
-      firelease.stats.queues[firelease.stats.queues.length - 1].sources[0];
-    await waitFor(() => explicitlyBufferedSource.queries.length === 1);
-    assert.strictEqual(explicitlyBufferedSource.queries[0].limit, 20);
-    assert.strictEqual(explicitlyBufferedSource.childrenKeysCalls, 0);
-    assert.strictEqual(explicitlyBufferedStats.size, null);
-    assert.strictEqual(explicitlyBufferedStats.sizeTimestamp, undefined);
-
+    const finiteSource = new FakeQueueRef('finite-buffer-database', 'queues/finite');
     const adaptiveSource = new FakeQueueRef('adaptive-database', 'queues/adaptive');
     for (let index = 0; index < 9; index++) {
       adaptiveSource.addTask(`initial-${index}`, {payload: index});
     }
-    let inProgressStarted = false;
-    let inProgressFinished = false;
-    let releaseInProgress!: () => void;
-    const inProgressBlocked = new Promise<void>(resolve => {releaseInProgress = resolve;});
-    firelease.attachWorker(asNodeFire(adaptiveSource), {bufferSize: Infinity}, async item => {
-      if (item.$ref.key === 'in-progress') {
-        inProgressStarted = true;
-        await inProgressBlocked;
-        inProgressFinished = true;
-      }
-    });
-    const adaptiveStats = firelease.stats.queues[firelease.stats.queues.length - 1].sources[0];
-    await waitFor(() => adaptiveStats.mode === 'safe' && adaptiveStats.size === 9);
-    assert(adaptiveStats.sizeTimestamp);
-    const initialSafeQuery = adaptiveSource.queries[adaptiveSource.queries.length - 1];
-    assert.strictEqual(initialSafeQuery.limit, 10);
+    firelease.attachWorker(asNodeFire(finiteSource), {bufferSize: 20}, () => undefined);
+    firelease.attachWorker(asNodeFire(adaptiveSource), {bufferSize: Infinity}, () => undefined);
+    await firelease.start();
 
-    adaptiveSource.deferNextValue = true;
-    for (let index = 0; index < 9; index++) {
-      await adaptiveSource.child(`initial-${index}`).remove();
-    }
-    await waitFor(() => adaptiveSource.deferredValueCallbacks.length === 1);
+    const finiteStats = firelease.stats.queues[0].sources[0];
+    const adaptiveStats = firelease.stats.queues[1].sources[0];
+    assert.strictEqual(finiteSource.queries[0].limit, 20);
+    assert.strictEqual(finiteSource.childrenKeysCalls, 0);
+    assert.strictEqual(finiteStats.size, null);
+    assert.strictEqual(finiteStats.sizeTimestamp, undefined);
     assert.strictEqual(adaptiveStats.mode, 'safe');
-    assert(Object.values(initialSafeQuery.listeners).every(listeners => listeners.length === 0));
-    const inProgressTask = adaptiveSource.addTask('in-progress', {payload: 'keep alive'});
-    for (let index = 0; index < 10; index++) {
-      adaptiveSource.addTask(`backlog-${index}`, {payload: index});
-    }
-    assert.strictEqual(adaptiveStats.mode, 'safe');
-    assert.strictEqual(adaptiveStats.size, 0);
+    assert.strictEqual(adaptiveStats.size, 9);
     assert(adaptiveStats.sizeTimestamp);
-    firelease.settings.globalMaxConcurrent = 1;
-    await waitFor(() => inProgressStarted);
-    firelease.settings.globalMaxConcurrent = 0;
-    adaptiveSource.deferNextValue = true;
-    adaptiveSource.releaseDeferredValues();
-    await waitFor(
-      () => adaptiveStats.mode === 'full' && adaptiveSource.deferredValueCallbacks.length === 1);
-    assert(Object.values(adaptiveSource.listeners).every(listeners => listeners.length === 0));
-    assert.strictEqual(inProgressFinished, false);
-    adaptiveSource.releaseDeferredValues();
-    await waitFor(
-      () => adaptiveStats.mode === 'safe' && adaptiveStats.size === 11 &&
-        adaptiveStats.sizeTimestamp !== undefined);
-    assert(adaptiveStats.sizeTimestamp);
-    releaseInProgress();
-    await waitFor(() => inProgressFinished && !inProgressTask.value);
-
-    adaptiveSource.childrenKeysCountOverride = 109;
-    await adaptiveSource.child('backlog-0').remove();
-    await waitFor(() => capturedErrors.some(
-      error => error.firelease?.code === 'safe-queue-size-mismatch'));
-    const mismatchError = capturedErrors.find(
-      error => error.firelease?.code === 'safe-queue-size-mismatch')!;
-    assert.strictEqual(mismatchError.message, 'Firelease safe queue size mismatch');
-    assert.strictEqual(mismatchError.firelease?.count, 109);
-    assert.strictEqual(mismatchError.firelease?.delta, 100);
-    assert.strictEqual(mismatchError.firelease?.listenerLimit, 10);
-    assert.strictEqual(mismatchError.firelease?.liveCount, 9);
-    assert.strictEqual(mismatchError.firelease?.source, adaptiveSource.toString());
-    assert.strictEqual(adaptiveStats.sizeDelta, 100);
-    adaptiveSource.childrenKeysCountOverride = undefined;
 
     const probesBeforeReconnect = adaptiveSource.childrenKeysCalls;
     adaptiveSource.databaseRoot.setConnected(false);
-    for (let index = 0; index < 10; index++) {
-      await adaptiveSource.child(`backlog-${index}`).remove();
+    for (let index = 0; index < 9; index++) {
+      await adaptiveSource.child(`initial-${index}`).remove();
     }
     adaptiveSource.databaseRoot.setConnected(true);
-    await waitFor(
-      () => adaptiveSource.childrenKeysCalls > probesBeforeReconnect &&
-        adaptiveStats.mode === 'full');
-    assert.strictEqual(adaptiveStats.sizeDelta, undefined);
-
-    // Keep intervals beyond the native timer limit from overflowing and firing immediately.
-    firelease.settings.queueCheckInterval = '30d';
-    const failedProbeSource = new FakeQueueRef('failed-probe-database', 'queues/failed');
-    failedProbeSource.childrenKeysError = Object.assign(
-      new Error('REST unavailable'), {code: 'timeout'});
-    firelease.attachWorker(asNodeFire(failedProbeSource), {bufferSize: Infinity}, () => undefined);
-    await waitFor(
-      () => capturedErrors.some(error =>
-        error.firelease?.code === 'queue-count-failed' &&
-        error.firelease.source === failedProbeSource.toString()));
-    await new Promise(resolve => {setTimeout(resolve, 25);});
-    assert.strictEqual(failedProbeSource.childrenKeysCalls, 1);
-    const countError = capturedErrors.find(
-      error => error.firelease?.code === 'queue-count-failed')!;
-    assert.strictEqual(countError.message, 'Firelease queue count failed');
-    assert.strictEqual(countError.firelease?.cause, 'REST unavailable');
-    assert.strictEqual(countError.firelease?.reason, 'startup');
-    assert.strictEqual(countError.firelease?.source, failedProbeSource.toString());
-
-    const orderedFirst = new FakeQueueRef('ordered-first', 'queues/first');
-    const orderedSecond = new FakeQueueRef('ordered-second', 'queues/second');
-    orderedFirst.databaseRoot.connected = false;
-    orderedSecond.databaseRoot.connected = false;
-    firelease.attachWorker(
-      [asNodeFire(orderedFirst), asNodeFire(orderedSecond)],
-      {bufferSize: Infinity},
-      () => undefined);
-    orderedSecond.databaseRoot.setConnected(true);
-    await waitFor(() => orderedSecond.childrenKeysCalls === 1);
-    assert.strictEqual(
-      orderedFirst.childrenKeysCalls, 0,
-      'a disconnected source must not block another source from initializing');
-    orderedFirst.databaseRoot.setConnected(true);
-    await waitFor(
-      () => orderedFirst.childrenKeysCalls === 1 && orderedSecond.childrenKeysCalls === 1);
-    assert(Array.isArray(firelease.stats.sickQueues));
-    assert(Array.isArray(firelease.stats.sickSources));
-    assert(firelease.stats.queues.every(queue => Array.isArray(queue.sources)));
-
-    const brokenSource = new FakeQueueRef('broken-database', 'queues/broken');
-    brokenSource.listenerError = new Error('Permission denied');
-    firelease.attachWorker(asNodeFire(brokenSource), () => undefined);
-    await waitFor(() => capturedErrors.some(
-      error => error.firelease?.code === 'queue-startup-failed' &&
-        error.firelease.source === brokenSource.toString()));
-    const startupError = capturedErrors.find(
-      error => error.firelease?.code === 'queue-startup-failed' &&
-        error.firelease.source === brokenSource.toString())!;
-    assert.strictEqual(startupError.message, 'Firelease queue startup failed');
-    assert.strictEqual(startupError.level, 'fatal');
-    assert.strictEqual(startupError.firelease?.cause, 'Permission denied');
-    assert.strictEqual(startupError.firelease?.phase, 'crashing');
+    await waitFor(() =>
+      adaptiveSource.childrenKeysCalls > probesBeforeReconnect && adaptiveStats.mode === 'full');
+    assert.strictEqual(firelease.state, 'paused');
   } finally {
-    Math.random = originalRandom;
     TESTABLES.resetBetweenTests();
   }
 });
 
-test('a promotion re-arms a replayed working task after it finishes', async () => {
+test('promotion and demotion keep an already-started task alive', async () => {
   TESTABLES.resetBetweenTests();
+  const originalRandom = Math.random;
+  Math.random = () => 0;
   try {
     firelease.settings.safeQueueSize = 10;
     firelease.settings.queueCheckInterval = 20;
-    firelease.settings.globalMaxConcurrent = 1;
-
-    const source = new FakeQueueRef('replayed-task-database', 'queues/replayed-task');
-    const task = source.addTask('a-in-progress', {payload: 'retry after promotion'});
+    firelease.limitTasksInFlight(1);
+    const source = new FakeQueueRef('switch-database', 'queues/switch');
+    const inProgressTask = source.addTask('a-in-progress', {payload: 'keep alive'});
     for (let index = 0; index < 8; index++) {
       source.addTask(`z-filler-${index}`, {payload: index});
     }
     let runs = 0;
-    let releaseFirstRun!: () => void;
-    const firstRunBlocked = new Promise<void>(resolve => {releaseFirstRun = resolve;});
+    let finished = false;
+    let releaseFirst!: () => void;
+    const firstBlocked = new Promise<void>(resolve => {releaseFirst = resolve;});
     firelease.attachWorker(asNodeFire(source), {bufferSize: Infinity}, async item => {
       if (item.$ref.key !== 'a-in-progress') return;
       runs++;
-      if (runs > 1) return;
-      await firstRunBlocked;
-      return 1;
+      if (runs === 1) {
+        await firstBlocked;
+        return 1;
+      }
+      finished = true;
     });
-    const sourceStats = firelease.stats.queues[firelease.stats.queues.length - 1].sources[0];
+    await firelease.start();
+    const sourceStats = firelease.stats.queues[0].sources[0];
     await waitFor(() => runs === 1 && sourceStats.mode === 'safe');
 
     for (let index = 0; index < 8; index++) {
       await source.child(`z-filler-${index}`).remove();
     }
     await waitFor(() => sourceStats.mode === 'full');
-    releaseFirstRun();
-    await waitFor(() => runs === 2 && !task.value);
+    for (let index = 0; index < 11; index++) {
+      source.addTask(`backlog-${index}`, {payload: index});
+    }
+    await waitFor(() => sourceStats.mode === 'safe');
+    assert.strictEqual(finished, false);
+    releaseFirst();
+    await waitFor(() => finished && !inProgressTask.value);
+  } finally {
+    Math.random = originalRandom;
+    TESTABLES.resetBetweenTests();
+  }
+});
+
+test('safe sources report shallow-count mismatches with structured details', async () => {
+  TESTABLES.resetBetweenTests();
+  const capturedErrors: FireleaseError[] = [];
+  const originalRandom = Math.random;
+  Math.random = () => 0;
+  try {
+    firelease.settings.safeQueueSize = 10;
+    firelease.settings.queueCheckInterval = 20;
+    firelease.settings.captureError = error => {capturedErrors.push(error);};
+    firelease.limitTasksInFlight(0);
+    const source = new FakeQueueRef('mismatch-database', 'queues/mismatch');
+    for (let index = 0; index < 10; index++) source.addTask(`task-${index}`, {payload: index});
+    firelease.attachWorker(asNodeFire(source), {bufferSize: Infinity}, () => undefined);
+    await firelease.start();
+
+    source.childrenKeysCountOverride = 109;
+    await source.child('task-0').remove();
+    await waitFor(() => capturedErrors.some(
+      error => error.firelease?.code === 'safe-queue-size-mismatch'));
+    const error = capturedErrors.find(
+      candidate => candidate.firelease?.code === 'safe-queue-size-mismatch')!;
+    assert.strictEqual(error.message, 'Firelease safe queue size mismatch');
+    assert.strictEqual(error.firelease?.count, 109);
+    assert.strictEqual(error.firelease?.delta, 100);
+    assert.strictEqual(error.firelease?.listenerLimit, 10);
+    assert.strictEqual(error.firelease?.liveCount, 9);
+    assert.strictEqual(error.firelease?.source, source.toString());
+    assert.strictEqual(firelease.stats.queues[0].sources[0].sizeDelta, 100);
+  } finally {
+    Math.random = originalRandom;
+    TESTABLES.resetBetweenTests();
+  }
+});
+
+test('failed startup probes fall back to safe mode', async () => {
+  TESTABLES.resetBetweenTests();
+  const capturedErrors: FireleaseError[] = [];
+  try {
+    firelease.settings.safeQueueSize = 10;
+    firelease.settings.queueCheckInterval = '30d';
+    firelease.settings.captureError = error => {capturedErrors.push(error);};
+    const source = new FakeQueueRef('failed-probe-database', 'queues/failed');
+    source.childrenKeysError = new Error('REST unavailable');
+    firelease.attachWorker(asNodeFire(source), {bufferSize: Infinity}, () => undefined);
+    await firelease.start();
+
+    const error = capturedErrors.find(
+      candidate => candidate.firelease?.code === 'queue-count-failed')!;
+    assert.strictEqual(error.message, 'Firelease queue count failed');
+    assert.strictEqual(error.firelease?.cause, 'REST unavailable');
+    assert.strictEqual(error.firelease?.reason, 'startup');
+    assert.strictEqual(firelease.stats.queues[0].sources[0].mode, 'safe');
   } finally {
     TESTABLES.resetBetweenTests();
   }
 });
 
-test('queue check cooldowns are capped and survive disconnects', async () => {
+test('a safe source schedules its next check after the previous check finishes', async () => {
   TESTABLES.resetBetweenTests();
-  const originalConsoleLog = console.log;
-  const logMessages: string[] = [];
-  console.log = (...args: unknown[]) => {logMessages.push(args.map(String).join(' '));};
+  const originalRandom = Math.random;
+  Math.random = () => 0;
   try {
     firelease.settings.safeQueueSize = 10;
-    firelease.settings.queueCheckInterval = '30d';
-    firelease.settings.globalMaxConcurrent = 0;
-    assert.strictEqual(TESTABLES.getQueueCheckCooldown(60_000), 30_000);
+    firelease.settings.queueCheckInterval = 20;
+    firelease.limitTasksInFlight(0);
+    const source = new FakeQueueRef('check-spacing-database', 'queues/check-spacing');
+    for (let index = 0; index < 10; index++) source.addTask(`task-${index}`, {payload: index});
+    firelease.attachWorker(asNodeFire(source), {bufferSize: Infinity}, () => undefined);
+    await firelease.start();
 
-    const slowSource = new FakeQueueRef('slow-startup-database', 'queues/slow-startup');
-    slowSource.deferNextValue = true;
-    firelease.attachWorker(asNodeFire(slowSource), {bufferSize: Infinity}, () => undefined);
-    await waitFor(() => slowSource.deferredValueCallbacks.length === 1);
-    await new Promise(resolve => {setTimeout(resolve, 500);});
-    slowSource.releaseDeferredValues();
-    await waitFor(() => logMessages.some(message => message.includes(slowSource.toString())));
-
-    const connectionLog = logMessages.find(message => message.includes(slowSource.toString()))!;
-    assert.match(connectionLog, /loaded 0 tasks in full mode \(\S+\)$/);
-
-    const reconnectingSource =
-      new FakeQueueRef('reconnecting-database', 'queues/reconnecting');
-    reconnectingSource.databaseRoot.connected = false;
-    firelease.attachWorker(
-      asNodeFire(reconnectingSource), {bufferSize: Infinity}, () => undefined);
-    reconnectingSource.databaseRoot.setConnected(true);
-    await new Promise(resolve => {setTimeout(resolve, 25);});
-    assert.strictEqual(reconnectingSource.childrenKeysCalls, 0);
-
-    reconnectingSource.databaseRoot.setConnected(false);
-    reconnectingSource.databaseRoot.setConnected(true);
-    await new Promise(resolve => {setTimeout(resolve, 100);});
-    assert.strictEqual(reconnectingSource.childrenKeysCalls, 0);
-    await waitFor(() => reconnectingSource.childrenKeysCalls === 1);
+    const starts: number[] = [];
+    const finishes: number[] = [];
+    let releaseCheck!: () => void;
+    source.childrenKeysHandler = () => new Promise<string[]>(resolve => {
+      starts.push(performance.now());
+      releaseCheck = () => {
+        finishes.push(performance.now());
+        resolve(Array.from({length: 10}, (_, index) => `task-${index}`));
+      };
+    });
+    await waitFor(() => starts.length === 1);
+    await new Promise(resolve => {setTimeout(resolve, 50);});
+    assert.strictEqual(starts.length, 1, 'checks must not overlap or schedule from their start');
+    releaseCheck();
+    await waitFor(() => starts.length === 2);
+    assert(starts[1] - finishes[0] >= 15);
+    releaseCheck();
+    await new Promise(resolve => {setTimeout(resolve, 10);});
   } finally {
-    console.log = originalConsoleLog;
+    Math.random = originalRandom;
+    TESTABLES.resetBetweenTests();
+  }
+});
+
+test('an initial listener attachment failure rejects startup and crashes', async () => {
+  TESTABLES.resetBetweenTests();
+  const capturedErrors: FireleaseError[] = [];
+  try {
+    firelease.settings.captureError = error => {capturedErrors.push(error);};
+    const source = new FakeQueueRef('broken-database', 'queues/broken');
+    source.listenerError = new Error('Permission denied');
+    firelease.attachWorker(asNodeFire(source), () => undefined);
+
+    await assert.rejects(firelease.start(), {message: 'Permission denied'});
+    const error = capturedErrors.find(
+      candidate => candidate.firelease?.code === 'queue-startup-failed')!;
+    assert.strictEqual(error.message, 'Firelease queue startup failed');
+    assert.strictEqual(error.level, 'fatal');
+    assert.strictEqual(error.firelease?.cause, 'Permission denied');
+  } finally {
     TESTABLES.resetBetweenTests();
   }
 });

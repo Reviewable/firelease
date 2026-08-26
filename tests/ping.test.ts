@@ -12,7 +12,7 @@ test('ping transaction failures are reported', async () => {
     firelease.settings.captureError = error => {capturedErrors.push(error);};
     const source = new FakeQueueRef('failed-ping-database', 'queues/failed');
     firelease.attachWorker(asNodeFire(source), {bufferSize: 1}, () => undefined);
-    await waitFor(() => source.queries.length === 1);
+    await firelease.start();
 
     source.transactionError = new Error('Ping write denied');
     firelease.pingQueues(undefined, 50);

@@ -1,17 +1,28 @@
 import assert from 'node:assert';
 import {test} from 'node:test';
 
-import {FireleaseStats, QueueSourceStats, QueueStats, TESTABLES} from '../src';
+import {QueueSourceStats, QueueStats, TESTABLES} from '../src';
+import {FireleaseRuntime} from '../src/runtime';
+
+test('components share the full runtime', () => {
+  const runtime = new FireleaseRuntime();
+
+  assert.strictEqual(runtime.stats.runtime, runtime);
+  assert.strictEqual(runtime.tasks.runtime, runtime);
+  assert.strictEqual(runtime.databases.runtime, runtime);
+  assert.strictEqual(runtime.queues.runtime, runtime);
+  assert.strictEqual(runtime.scheduler.runtime, runtime);
+});
 
 test('stats are derived through the hierarchy on demand', () => {
   TESTABLES.resetBetweenTests();
   const expectedDuration = 40;
-  let stuckTasks = 0;
+  const runtime = new FireleaseRuntime();
   const sourceStats = new QueueSourceStats('https://stats.example.test/queues/jobs');
   const secondSourceStats = new QueueSourceStats('https://second.example.test/queues/jobs');
   const queueStats = new QueueStats(
-    'https://stats.example.test/queues/jobs', 'jobs', [sourceStats, secondSourceStats]);
-  const hierarchyStats = new FireleaseStats(() => stuckTasks);
+    'https://stats.example.test/queues/jobs', 'jobs', 2, [sourceStats, secondSourceStats]);
+  const hierarchyStats = runtime.stats;
   hierarchyStats.queues.push(queueStats);
 
   assert.strictEqual(queueStats.healthy, false);
@@ -22,6 +33,7 @@ test('stats are derived through the hierarchy on demand', () => {
   assert.strictEqual(queueStats.size, null);
   assert.strictEqual(queueStats.sizeDelta, undefined);
   assert.strictEqual(queueStats.sizeTimestamp, undefined);
+  assert.strictEqual(queueStats.priority, 2);
 
   sourceStats.connected = true;
   sourceStats.size = 4;
@@ -44,7 +56,8 @@ test('stats are derived through the hierarchy on demand', () => {
   secondSourceStats.leaseTransactions.tries = 5;
   secondSourceStats.leaseTransactions.duration = 30;
   queueStats.tasksAcquired = 3;
-  stuckTasks = 2;
+  runtime.tasks.blacklist('first');
+  runtime.tasks.blacklist('second');
   assert.strictEqual(hierarchyStats.healthy, true);
   assert.deepStrictEqual(hierarchyStats.sickQueues, []);
   assert.deepStrictEqual(hierarchyStats.sickSources, []);
@@ -68,15 +81,17 @@ test('stats are derived through the hierarchy on demand', () => {
   assert.deepStrictEqual(
     Object.keys(hierarchyStats),
     [
-      'queues', 'healthy', 'sickQueues', 'sickSources', 'stuckTasks', 'maxLatency',
+      'databases', 'queues', 'healthy', 'sickQueues', 'sickSources', 'stuckTasks', 'maxLatency',
       'leaseTransactions', 'tasksAcquired'
     ],
   );
   assert.deepStrictEqual(JSON.parse(JSON.stringify(hierarchyStats)), {
+    databases: [],
     queues: [{
       tasksAcquired: 3,
       ref: 'https://stats.example.test/queues/jobs',
       key: 'jobs',
+      priority: 2,
       sources: [{
         connected: true,
         mode: 'safe',
@@ -130,7 +145,7 @@ test('duration rollups use an unweighted mean at each level', () => {
   secondSource.leaseTransactions.failed = 1;
   secondSource.leaseTransactions.duration = 80;
   const idleSource = new QueueSourceStats('https://idle.example.test/queues/jobs');
-  const firstQueue = new QueueStats('https://first.example.test/queues/jobs', 'jobs', [
+  const firstQueue = new QueueStats('https://first.example.test/queues/jobs', 'jobs', 1, [
     firstSource, secondSource, idleSource
   ]);
 
@@ -140,9 +155,9 @@ test('duration rollups use an unweighted mean at each level', () => {
   thirdSource.leaseTransactions.failed = 1;
   thirdSource.leaseTransactions.duration = 30;
   const secondQueue = new QueueStats(
-    'https://third.example.test/queues/other', 'other', [thirdSource]);
+    'https://third.example.test/queues/other', 'other', 1, [thirdSource]);
 
-  const hierarchyStats = new FireleaseStats(() => 0);
+  const hierarchyStats = new FireleaseRuntime().stats;
   hierarchyStats.queues.push(firstQueue, secondQueue);
 
   assert.strictEqual(firstQueue.leaseTransactions.duration, 50);

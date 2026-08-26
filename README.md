@@ -3,12 +3,18 @@ Firelease
 
 [![Project Status: Active - The project has reached a stable, usable state and is being actively developed.](http://www.repostatus.org/badges/latest/active.svg)](http://www.repostatus.org/#active)
 
-A Firebase queue consumer for Node with at-least-once and at-most-once semantics, fine-grained concurrency controls, and support for promises.  Built on top of [Nodefire](https://github.com/pkaminski/nodefire).
+A Firebase queue consumer for Node with at-least-once and at-most-once semantics, fine-grained admission controls, and support for promises.  Built on top of [Nodefire](https://github.com/pkaminski/nodefire).
 
 API
 ---
 
 All durations can be specified as either a human-readable string, or a number of milliseconds.
+
+Firelease 5 requires NodeFire 7.2 or newer and an explicit `start()` call after workers are attached.
+The previous
+`maxConcurrent` queue option and `settings.globalMaxConcurrent` have been replaced by the composable
+`limitTasksInFlight()` control.  Task starts are automatically rate-controlled per Firebase
+database from observed write latency.
 
 The module exposes these functions:
 
@@ -20,14 +26,13 @@ paths concurrently.
 
 * `@param {Nodefire | Nodefire[]} refOrRefs` A Nodefire ref, or an array of refs, to the queue roots
   in Firebase.  When multiple refs are supplied, their tasks form one logical queue: they use the
-  same worker and share `maxConcurrent` and the other queue options.  The refs may point to
+  same worker and queue options.  The refs may point to
   different paths and databases.  Individual tasks will be children of these roots and must be
   objects.  Duplicate refs in the same array are ignored; as with the single-ref API, don't attach
   separate logical queues to the same path in one process.  The `_lease` key is reserved for use by
   Firelease in each task.
 
 * `@param {Object} options` Optional options, supporting the following values:
-  * `maxConcurrent: {number}` max number of tasks to handle concurrently for this worker.
   * `bufferSize: {number}` upper bound on how many tasks to keep buffered from each source and
     potentially go through leasing transactions in parallel.  It defaults to `Infinity`, which is
     preferred for both efficiency and correctness unless you know that the queue will spend most of
@@ -38,6 +43,10 @@ paths concurrently.
     progress keep running.  Set a finite value only for a queue expected to remain large most of the
     time, to keep it permanently on a limited listener.  An explicit finite value is used as-is and
     may be greater than `settings.safeQueueSize`, which applies only to adaptive buffers.
+  * `priority: {number}` positive relative task-start priority.  Values greater than or equal to 1
+    identify foreground queues.  Values below 1 identify background queues, which are considered
+    only when no foreground queue has an admissible task.  Selection within either tier is random
+    and proportional to priority.  Defaults to 1.
   * `minLease: {number | string}` minimum duration of each lease, which should equal the maximum
     expected time a worker will take to handle a task.
   * `maxLease: {number | string}` maximum duration of each lease; the lease duration is doubled each
@@ -70,6 +79,46 @@ paths concurrently.
   * A function that takes the task as argument and returns one of the values above.  This function
     will be executed in a transaction to ensure atomicity.
   All of these values can also be wrapped in a promise.
+
+`attachWorker()` only registers the queue.  Attach every worker before calling `start()`.
+
+```function start()```
+
+Starts Firelease and returns a promise that resolves after every attached source has connected and
+loaded its initial listener.  No task is dispatched until all initial sources are loaded.  Queues are
+initialized in attachment order.  Calling `start()` more than once returns the same promise;
+attaching another worker after startup begins throws an error.
+
+For each available task-start opportunity, Firelease finds logical queues with an admissible source:
+one that is connected and loaded, has a ready task and in-flight capacity, and whose database is
+ready to admit another start.  If any foreground queues are eligible, it selects one randomly in
+proportion to their priorities.  Otherwise it selects proportionally from eligible background
+queues.  Sources within the selected logical queue remain round-robin.  Queue selection has no
+memory, so an idle queue neither accumulates credit nor incurs a penalty when work arrives later.
+
+On a Firebase disconnect, every source using that database stops its listener.  Once the database
+reconnects, those sources reload in attachment order before they resume dispatching.  Sources on
+other databases remain available throughout.
+
+A failed task lease transaction is retried with an uncapped exponential backoff starting at 1
+second.  The first two consecutive failures are not reported; reporting begins with the third
+failure.  Any completed lease transaction resets the failure streak.
+
+```function limitTasksInFlight(limit, ref)```
+
+Limits the number of tasks between the start of their lease transaction and the completion of all
+worker and post-processing work.  The optional second argument scopes the limit to queue sources at
+or below that Firebase ref; without a ref it covers every current and future source.  Limits compose,
+so every global, ancestor, and exact-source limit must admit a task.  Passing 0 pauses matching
+sources.  Lowering a limit never interrupts a task that has already started, and the returned
+idempotent release function removes only that limit.
+
+```function waitForTasksInFlight(timeout, ref)```
+
+Resolves once the actual number of tasks in flight in the optional subtree is at or below its
+current effective limit.  `timeout` is required.  A timeout rejects with the constant message
+`Firelease tasks-in-flight wait timed out`; count, limit, timeout, scope, and the distinct
+`tasks-in-flight-wait-timeout` code are available in `error.firelease`.
 
 
 ```function pingQueues(callback, interval)```
@@ -109,7 +158,9 @@ constraints along the way and throws an error if the worker needs to abort.
 
 ```function shutdown()```
 
-Shuts down firelease by refusing to take new tasks, and returns a promise that resolves once all currently running tasks have completed.
+Permanently shuts down Firelease by applying a global zero in-flight limit, and returns a promise
+that resolves once all running tasks complete.  Running tasks may continue extending their leases
+and performing post-processing while Firelease drains.
 
 ```function listTasksInProgress()```
 
@@ -117,26 +168,57 @@ Returns an array of the URLs of all tasks that are currently being worked on.
 
 The module also exports a mutable `settings` object:
 
-```settings.globalMaxConcurrent: {number}```
-
-Set this to the maximum number of concurrent tasks being executed at any moment across all queues.
-
 ```settings.safeQueueSize: {number}```
 
 The maximum number of tasks loaded by an adaptive safe-mode listener.  Defaults to 6,000.  Adaptive
 sources enter full mode only below `safeQueueSize * 0.85` and demote from full mode above
-`safeQueueSize`.  Configure this before attaching workers.
+`safeQueueSize`.  Configure this before calling `start()`.
 
 ```settings.queueCheckInterval: {number | string}```
 
 How often safe-mode sources enqueue a shallow REST count check, with 5% random jitter.  Defaults to
-5 minutes.
+5 minutes.  Checks, promotions, and demotions share one serialized in-process queue; a source's
+next scheduled check is measured from the completion of its previous check.
 
 ```settings.queueLoadTimeout: {number | string}```
 
 How long Firelease waits for a queue listener's initial value before treating the load as stalled.
 Defaults to 1 minute.  A stalled full-mode load falls back to safe mode; a stalled safe-mode load
 is fatal because no bounded listener is available to process the queue.
+
+```settings.writeLatencyTarget: {number | string}```
+
+The target Firebase write latency used to control task starts.  Defaults to 2 seconds.  Firelease
+installs a NodeFire completion observer and creates one controller for every Firebase database used
+by an attached source.  Each controller observes every NodeFire write to its database, including
+writes outside Firelease.  Transaction samples use the average duration per try.
+
+After enough fresh samples have arrived, a controller halves its task-start rate when its write
+latency EMA exceeds the target.  When latency is below 75% of the target, it adds one task per second.
+The rate remains unchanged inside that hysteresis band.  Each adjustment starts a fresh observation
+window, so operations already in flight cannot cause consecutive adjustments.  Firebase latency
+errors such as timeouts contribute high-latency samples; permanent errors such as permission or
+validation failures do not.
+
+```settings.initialTaskStartRate: {number}```
+
+The task-start rate per database, in tasks per second, used after startup and each reconnect.
+Defaults to 5.  The controller uses a one-token bucket, so starts are smoothed rather than released
+in bursts.
+
+```settings.maxTaskStartRate: {number}```
+
+The maximum task-start rate per database, in tasks per second.  Defaults to 50.  The internal
+minimum is 0.1 tasks per second so that an overloaded database can recover without stopping queue
+progress altogether.
+
+```settings.taskStartRateAdjustmentInterval: {number | string}```
+
+The minimum time between control decisions, with 5% random jitter.  Defaults to 5 seconds.
+
+```settings.taskStartRateMinSamples: {number}```
+
+The minimum number of fresh write samples required for a control decision.  Defaults to 20.
 
 ```settings.captureError: {function(Error)}```
 
@@ -148,7 +230,9 @@ Mutable default option values for all subsequent attachWorker calls.  See that f
 
 ```stats: {Object}```
 
-The live stats object also passed to the ping callback.  Global fields include `healthy`,
+The live stats object also passed to the ping callback.  Its `databases` array contains each
+database root, current `taskStartRate`, write latency EMA, and lifetime `writeSamples`.  Global fields
+include `healthy`,
 `sickQueues`, `sickSources`, `stuckTasks`, `maxLatency`, `leaseTransactions`, and the legacy
 `tasksAcquired`.  `leaseTransactions` contains lifetime `acquired`, `contended`, `failed`, and
 `tries` counts for task lease transactions.  `tries` includes failed transactions and comes from
@@ -157,8 +241,8 @@ transaction duration in milliseconds, using an alpha of 0.1.  These stats are av
 physical source.  Logical queue and global counts are additive, while their duration is the average
 of the underlying source or queue duration values that have recorded at least one attempt.  The
 legacy `tasksAcquired` field also remains
-lifetime-cumulative.  Each entry in `queues` includes its own health, latency, leasing totals, and
-all physical `sources`.  Queue-level
+lifetime-cumulative.  Each entry in `queues` includes its configured priority, health, latency,
+leasing totals, and all physical `sources`.  Queue-level
 `size` and `sizeDelta` sum their source values when all are known, `sizeTimestamp` is the oldest
 source timestamp, and `mode` is `full`, `safe`, or `mixed`.  Source stats include `connected`,
 current `mode` (`full` or `safe`), last known `size`, `sizeTimestamp` when the size came from a
@@ -166,3 +250,11 @@ shallow REST check, `sizeDelta` when the safe listener was below its limit (the 
 buffered task count), and ping health and latency.  Queue size is reported only for adaptive
 sources; it remains `null` for sources with an explicit finite `bufferSize` because a limited
 listener cannot determine the true queue size.
+
+```state: 'initializing' | 'running' | 'paused' | 'shutting-down'```
+
+A live getter for the current lifecycle state.  It is `initializing` while initial or reconnecting
+sources load, `paused` when zero in-flight limits suspend every attached source,
+`running` otherwise after the required listeners load, and permanently `shutting-down` after
+`shutdown()` begins.
+Firelease rechecks scheduler state at least once per minute even if no ordinary timer wakes it.

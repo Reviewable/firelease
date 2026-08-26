@@ -25,7 +25,7 @@ class FakeSnapshot {
   }
 }
 
-class FakeDatabaseRoot {
+export class FakeDatabaseRoot {
   readonly database;
   connected = true;
   connectionListeners: ConnectionListener[] = [];
@@ -66,6 +66,10 @@ class FakeDatabaseRoot {
 
   isEqual(other: unknown) {
     return other === this;
+  }
+
+  toString() {
+    return `https://${this.name}.example.test/`;
   }
 }
 
@@ -225,6 +229,7 @@ export class FakeQueueRef {
   deferNextValue = false;
   childrenKeysError?: Error;
   childrenKeysCountOverride?: number;
+  childrenKeysHandler?: () => Promise<string[]>;
   childrenKeysCalls = 0;
   listenerError?: Error;
   transactionError?: Error;
@@ -235,8 +240,10 @@ export class FakeQueueRef {
   beforeTransaction?: (ref: FakeTaskRef) => void;
   fixedNow?: number;
 
-  constructor(databaseName: string, readonly path: string) {
-    this.databaseRoot = new FakeDatabaseRoot(databaseName);
+  constructor(
+    databaseName: string, readonly path: string, databaseRoot = new FakeDatabaseRoot(databaseName)
+  ) {
+    this.databaseRoot = databaseRoot;
     this.database = this.databaseRoot.database;
     this.key = path.split('/').pop()!;
   }
@@ -265,6 +272,7 @@ export class FakeQueueRef {
   childrenKeys(options?: {timeout?: number}) {
     assert.strictEqual(options?.timeout, 15_000);
     this.childrenKeysCalls++;
+    if (this.childrenKeysHandler) return this.childrenKeysHandler();
     if (this.childrenKeysError) return Promise.reject(this.childrenKeysError);
     if (this.childrenKeysCountOverride !== undefined) {
       return Promise.resolve(

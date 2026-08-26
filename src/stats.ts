@@ -1,7 +1,16 @@
 import _ from 'lodash';
 
+import type {FireleaseRuntime} from './runtime';
+
 export type QueueSourceMode = 'full' | 'safe';
 export type QueueMode = QueueSourceMode | 'mixed';
+
+export class DatabaseStats {
+  writeLatency: number | null = null;
+  writeSamples = 0;
+
+  constructor(readonly ref: string, public taskStartRate: number) {}
+}
 
 export interface LeaseTransactionStats {
   acquired: number;
@@ -58,6 +67,7 @@ export class QueueStats {
   constructor(
     readonly ref: string,
     readonly key: string | null,
+    readonly priority: number,
     readonly sources: QueueSourceStats[]
   ) {
     exposeGetters(
@@ -99,11 +109,12 @@ export class QueueStats {
 }
 
 export class FireleaseStats {
-  readonly #getStuckTasks: () => number;
+  declare readonly runtime: FireleaseRuntime;
+  readonly databases: DatabaseStats[] = [];
   readonly queues: QueueStats[] = [];
 
-  constructor(getStuckTasks: () => number) {
-    this.#getStuckTasks = getStuckTasks;
+  constructor(runtime: FireleaseRuntime) {
+    Object.defineProperty(this, 'runtime', {value: runtime});
     exposeGetters(
       this,
       [
@@ -131,7 +142,7 @@ export class FireleaseStats {
   }
 
   get stuckTasks() {
-    return this.#getStuckTasks();
+    return this.runtime.tasks.blacklistedSize;
   }
 
   get maxLatency() {

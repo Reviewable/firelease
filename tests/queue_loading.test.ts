@@ -4,7 +4,7 @@ import {test} from 'node:test';
 import firelease, {TESTABLES, type FireleaseError} from '../src';
 import {asNodeFire, FakeQueueRef, waitFor} from './fake_firebase';
 
-test('queue load timeouts fall back from full mode and fail in safe mode', async () => {
+test('a full-mode load timeout falls back to safe mode', async () => {
   TESTABLES.resetBetweenTests();
   const capturedErrors: FireleaseError[] = [];
   try {
@@ -14,42 +14,51 @@ test('queue load timeouts fall back from full mode and fail in safe mode', async
     firelease.settings.safeQueueSize = 10;
     firelease.settings.queueCheckInterval = '30d';
     firelease.settings.queueLoadTimeout = 20;
-    firelease.settings.globalMaxConcurrent = 0;
     firelease.settings.captureError = error => {capturedErrors.push(error);};
+    firelease.limitTasksInFlight(0);
 
-    const fullSource = new FakeQueueRef('full-timeout-database', 'queues/full-timeout');
-    fullSource.deferNextValue = true;
-    firelease.attachWorker(asNodeFire(fullSource), {bufferSize: Infinity}, () => undefined);
-    const fullStats = firelease.stats.queues[firelease.stats.queues.length - 1].sources[0];
-    await waitFor(() => fullStats.mode === 'safe' && fullSource.queries.length === 1);
+    const source = new FakeQueueRef('full-timeout-database', 'queues/full-timeout');
+    source.deferNextValue = true;
+    firelease.attachWorker(asNodeFire(source), {bufferSize: Infinity}, () => undefined);
+    await firelease.start();
+    const sourceStats = firelease.stats.queues[0].sources[0];
 
-    const fullTimeout = capturedErrors.find(error =>
-      error.firelease?.code === 'queue-load-timeout' &&
-      error.firelease.source === fullSource.toString())!;
-    assert.strictEqual(fullTimeout.message, 'Firelease queue load timed out');
-    assert.strictEqual(fullTimeout.level, 'warning');
-    assert.strictEqual(fullTimeout.firelease?.description, 'startup');
-    assert.strictEqual(fullTimeout.firelease?.mode, 'full');
-    assert.strictEqual(fullTimeout.firelease?.timeout, 20);
-    assert(Object.values(fullSource.listeners).every(listeners => listeners.length === 0));
+    assert.strictEqual(sourceStats.mode, 'safe');
+    assert.strictEqual(source.queries.length, 1);
+    const timeout = capturedErrors.find(error => error.firelease?.code === 'queue-load-timeout')!;
+    assert.strictEqual(timeout.message, 'Firelease queue load timed out');
+    assert.strictEqual(timeout.level, 'warning');
+    assert.strictEqual(timeout.firelease?.description, 'startup');
+    assert.strictEqual(timeout.firelease?.mode, 'full');
+    assert.strictEqual(timeout.firelease?.timeout, 20);
+    assert(Object.values(source.listeners).every(listeners => listeners.length === 0));
+  } finally {
+    TESTABLES.resetBetweenTests();
+  }
+});
 
-    const safeSource = new FakeQueueRef('safe-timeout-database', 'queues/safe-timeout');
-    safeSource.childrenKeysCountOverride = 10;
-    safeSource.deferNextValue = true;
-    firelease.attachWorker(asNodeFire(safeSource), {bufferSize: Infinity}, () => undefined);
+test('a safe-mode load timeout rejects startup and crashes', async () => {
+  TESTABLES.resetBetweenTests();
+  const capturedErrors: FireleaseError[] = [];
+  try {
+    firelease.settings.safeQueueSize = 10;
+    firelease.settings.queueLoadTimeout = 20;
+    firelease.settings.captureError = error => {capturedErrors.push(error);};
+    const source = new FakeQueueRef('safe-timeout-database', 'queues/safe-timeout');
+    source.childrenKeysCountOverride = 10;
+    source.deferNextValue = true;
+    firelease.attachWorker(asNodeFire(source), {bufferSize: Infinity}, () => undefined);
+
+    await assert.rejects(firelease.start(), {message: 'timeout'});
     await waitFor(() => capturedErrors.some(error =>
-      error.level === 'fatal' && error.firelease?.code === 'queue-load-timeout' &&
-      error.firelease.source === safeSource.toString()));
-
-    const safeTimeout = capturedErrors.find(error =>
-      error.level === 'fatal' && error.firelease?.code === 'queue-load-timeout' &&
-      error.firelease.source === safeSource.toString())!;
-    assert.strictEqual(safeTimeout.message, 'Firelease queue load timed out');
-    assert.strictEqual(safeTimeout.firelease?.description, 'startup');
-    assert.strictEqual(safeTimeout.firelease?.mode, 'safe');
-    assert.strictEqual(safeTimeout.firelease?.timeout, 20);
-    assert(Object.values(safeSource.queries[0].listeners)
-      .every(listeners => listeners.length === 0));
+      error.level === 'fatal' && error.firelease?.code === 'queue-load-timeout'));
+    const timeout = capturedErrors.find(error =>
+      error.level === 'fatal' && error.firelease?.code === 'queue-load-timeout')!;
+    assert.strictEqual(timeout.message, 'Firelease queue load timed out');
+    assert.strictEqual(timeout.firelease?.description, 'startup');
+    assert.strictEqual(timeout.firelease?.mode, 'safe');
+    assert.strictEqual(timeout.firelease?.timeout, 20);
+    assert(Object.values(source.queries[0].listeners).every(listeners => listeners.length === 0));
   } finally {
     TESTABLES.resetBetweenTests();
   }

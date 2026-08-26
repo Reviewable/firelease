@@ -24,6 +24,7 @@ test('firstAcquisition is worker-local and only set on the first lease', async (
         }
       }
     );
+    await firelease.start();
 
     const task = source.addTask('task', {payload: 1});
     await waitFor(() => flags.length === 1);
@@ -51,6 +52,7 @@ test('an existing initial value is not treated as a first acquisition', async ()
       workerCalled = true;
       firstAcquisition = item._lease.firstAcquisition;
     });
+    await firelease.start();
 
     const task = source.addTask('task', {payload: 1, _lease: {initial: 0, expiry: 0}});
     await waitFor(() => workerCalled && !task.value);
