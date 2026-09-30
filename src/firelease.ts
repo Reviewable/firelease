@@ -2,6 +2,7 @@ import _ from 'lodash';
 import ms from 'ms';
 import NodeFire, {type TransactionMetadata} from 'nodefire';
 import * as timers from 'safe-timers';
+import {AsyncLocalStorage} from 'node:async_hooks';
 import {
   FireleaseStats, QueueSourceStats, QueueStats, type QueueSourceMode
 } from './stats';
@@ -16,6 +17,7 @@ const QUEUE_SIZE_HYSTERESIS = 0.15;
 const QUEUE_SIZE_MISMATCH_THRESHOLD = 100;
 const DEMOTION_JITTER = ms('30s');
 const LEASE_TRANSACTION_DURATION_ALPHA = 0.1;
+const taskContext = new AsyncLocalStorage<{item: WorkerItem | undefined}>();
 
 declare const RETRY_DIRECTIVE: unique symbol;
 
@@ -116,6 +118,7 @@ export interface FireleaseApi {
   };
   pingQueues(callback?: ((report: PingReport) => void) | null, interval?: Duration): void;
   extendLease(item: WorkerItem, timeNeeded: Duration): Promise<void>;
+  getCurrentTask(): WorkerItem | undefined;
   blacklist(taskKey: string): boolean;
   shutdown(): Promise<void>;
   listTasksInProgress(): string[];
@@ -222,6 +225,7 @@ const firelease = Object.freeze({
   attachWorker,
   pingQueues,
   extendLease,
+  getCurrentTask,
   blacklist,
   shutdown,
   listTasksInProgress
@@ -1101,8 +1105,20 @@ class Queue {
   }
 
   async callWorker(item: WorkerItem) {
-    return this.worker(item);
+    const context = {item: item as WorkerItem | undefined};
+    return taskContext.run(context, async () => {
+      try {
+        return await this.worker(item);
+      } finally {
+        context.item = undefined;
+      }
+    });
   }
+}
+
+/** Returns the task handled by this asynchronous call chain, while its worker is active. */
+export function getCurrentTask(): WorkerItem | undefined {
+  return taskContext.getStore()?.item;
 }
 
 

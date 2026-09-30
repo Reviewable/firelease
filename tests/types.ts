@@ -1,6 +1,7 @@
 import NodeFire from 'nodefire';
 import firelease, {
-  RETRY, TESTABLES, attachWorker, blacklist, defaults, extendLease, listTasksInProgress, pingQueues,
+  RETRY, TESTABLES, attachWorker, blacklist, defaults, extendLease, getCurrentTask,
+  listTasksInProgress, pingQueues,
   settings, shutdown, type CaptureLeaseTransactionMetrics, type Duration, type FireleaseApi,
   type FireleaseError, type FireleaseErrorDetails, type FireleaseErrorLevel, type FireleaseSettings,
   type FireleaseStats, type Lease, type LeaseItem, type LeaseTransactionStats, type PingReport,
@@ -18,6 +19,9 @@ declare const leaseItem: LeaseItem;
 declare const leaseTransactionStats: LeaseTransactionStats;
 declare const leaseTransactionOutcome: LeaseTransactionOutcome;
 declare const workerItem: WorkerItem;
+const currentTask: WorkerItem | undefined = getCurrentTask();
+const defaultCurrentTask: WorkerItem | undefined = firelease.getCurrentTask();
+void [currentTask, defaultCurrentTask];
 declare const fireleaseError: FireleaseError;
 declare const pingReport: PingReport;
 declare const queueOptions: QueueOptions;
