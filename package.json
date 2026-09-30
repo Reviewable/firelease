@@ -1,6 +1,6 @@
 {
   "name": "firelease",
-  "version": "4.3.1",
+  "version": "4.4.0",
   "packageManager": "yarn@4.13.0",
   "description": "Firebase queue consumer for Node with at-least-once semantics",
   "main": "built/index.js",

@@ -93,6 +93,12 @@ Blacklist the given task key from ever being processed again.
 * `@return {boolean}` True if the task key was added to the list, false if it was already present.
 
 
+```function getCurrentTask()```
+
+Returns the current worker's task, including its lease and `$ref`, through asynchronous calls.
+Returns `undefined` outside a worker or after that worker finishes. Concurrent workers have
+independent contexts. Available as both a named export and `firelease.getCurrentTask()`.
+
 ```function extendLease(item, timeNeeded)```
 
 Extends the lease on a task to give the worker more time to finish.  Checks a bunch of validity
