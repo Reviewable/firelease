@@ -30,7 +30,9 @@ export type WriteMetric = {
 export type CaptureWriteMetrics = (metric: WriteMetric) => undefined;
 
 export class DatabaseWriteObserver {
-  private readonly databases = new Map<string, {stats: DatabaseStats, registeredAt: number}>();
+  private readonly databases: {
+    root: NodeFire, stats: DatabaseStats, registeredAt: number
+  }[] = [];
 
   constructor(
     private readonly stats: FireleaseStats,
@@ -42,10 +44,9 @@ export class DatabaseWriteObserver {
 
   register(ref: NodeFire) {
     const root = ref.root;
-    const key = databaseKey(root);
-    if (this.databases.has(key)) return;
+    if (_.some(this.databases, database => database.root.isEqual(root))) return;
     const stats = new DatabaseStats(root.toString(), root.database.app.name);
-    this.databases.set(key, {stats, registeredAt: performance.now()});
+    this.databases.push({root, stats, registeredAt: performance.now()});
     this.stats.databases.push(stats);
   }
 
@@ -77,7 +78,8 @@ export class DatabaseWriteObserver {
     const duration = transaction ? transaction.duration : op.duration;
     if (!Number.isFinite(duration) || duration! < 0) return;
 
-    const database = this.databases.get(databaseKey(op.ref.root));
+    const root = op.ref.root;
+    const database = _.find(this.databases, candidate => candidate.root.isEqual(root));
     // Also exclude completions of writes started before registration or before a test reset.
     if (!database || op.startTime! < database.registeredAt) return;
     const {stats} = database;
@@ -106,11 +108,7 @@ export class DatabaseWriteObserver {
   }
 
   reset() {
-    this.databases.clear();
+    this.databases.length = 0;
     this.stats.databases.length = 0;
   }
-}
-
-function databaseKey(root: NodeFire) {
-  return JSON.stringify([root.database.app.name, root.toString()]);
 }
