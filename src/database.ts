@@ -30,9 +30,7 @@ export type WriteMetric = {
 export type CaptureWriteMetrics = (metric: WriteMetric) => undefined;
 
 export class DatabaseWriteObserver {
-  private readonly databases: {
-    root: NodeFire, stats: DatabaseStats, registeredAt: number
-  }[] = [];
+  private readonly databases = new Map<string, {stats: DatabaseStats, registeredAt: number}>();
 
   constructor(
     private readonly stats: FireleaseStats,
@@ -44,9 +42,10 @@ export class DatabaseWriteObserver {
 
   register(ref: NodeFire) {
     const root = ref.root;
-    if (_.some(this.databases, database => database.root.isEqual(root))) return;
+    const key = databaseKey(root);
+    if (this.databases.has(key)) return;
     const stats = new DatabaseStats(root.toString(), root.database.app.name);
-    this.databases.push({root, stats, registeredAt: performance.now()});
+    this.databases.set(key, {stats, registeredAt: performance.now()});
     this.stats.databases.push(stats);
   }
 
@@ -78,8 +77,7 @@ export class DatabaseWriteObserver {
     const duration = transaction ? transaction.duration : op.duration;
     if (!Number.isFinite(duration) || duration! < 0) return;
 
-    const root = op.ref.root;
-    const database = _.find(this.databases, candidate => candidate.root.isEqual(root));
+    const database = this.databases.get(databaseKey(op.ref.root));
     // Also exclude completions of writes started before registration or before a test reset.
     if (!database || op.startTime! < database.registeredAt) return;
     const {stats} = database;
@@ -87,7 +85,9 @@ export class DatabaseWriteObserver {
     const identity = {ref: stats.ref, app: stats.app, method: op.method as WriteMethod, tries};
     let metric: WriteMetric;
     if (op.error === undefined) {
-      if (transaction && transaction.outcome !== 'commit') return;
+      if (transaction && transaction.outcome !== 'commit') {
+        throw new Error(`Unexpected successful transaction outcome: ${transaction.outcome}`);
+      }
       const latency = duration! / tries;
       stats.writeLatency = stats.writeLatency === null ? latency :
         (1 - WRITE_LATENCY_ALPHA) * stats.writeLatency + WRITE_LATENCY_ALPHA * latency;
@@ -99,15 +99,18 @@ export class DatabaseWriteObserver {
       if (!error.firebase) return;
       const code = _.toLower(error.firebase.code ?? '');
       const outcome = code === 'timeout' ? 'timeout' : 'failure';
-      if (outcome === 'timeout') stats.writeTimeouts++;
-      else stats.writeFailures++;
+      if (outcome === 'timeout') stats.writeTimeouts++; else stats.writeFailures++;
       metric = {...identity, outcome, elapsed: duration!, code};
     }
     this.settings.captureWriteMetrics?.(metric);
   }
 
   reset() {
-    this.databases.length = 0;
+    this.databases.clear();
     this.stats.databases.length = 0;
   }
+}
+
+function databaseKey(root: NodeFire) {
+  return JSON.stringify([root.database.app.name, root.toString()]);
 }

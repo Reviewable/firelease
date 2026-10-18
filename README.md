@@ -180,7 +180,7 @@ The live stats object also passed to the ping callback.  Global fields include `
 `tasksAcquired`.  `leaseTransactions` contains lifetime `acquired`, `contended`, `failed`, and
 `tries` counts for task lease transactions.  `tries` includes failed transactions and comes from
 NodeFire transaction metadata.  `duration` is an exponential moving average of the NodeFire
-transaction duration in milliseconds, using an alpha of 0.1.  These stats are available for every
+transaction duration in milliseconds.  These stats are available for every
 physical source.  Logical queue and global counts are additive, while their duration is the average
 of the underlying source or queue duration values that have recorded at least one attempt.  The
 legacy `tasksAcquired` field also remains
@@ -196,7 +196,7 @@ listener cannot determine the true queue size.
 
 `databases` contains one entry per Firebase database connection used by attached workers. Each
 entry identifies the root URL (`ref`) and Firebase app name (`app`); distinct apps accessing the
-same URL remain separate. `writeLatency` is an exponential moving average (alpha 0.1) of successful
+same URL remain separate. `writeLatency` is an exponential moving average of successful
 write latency in milliseconds, initially `null`. `writeSamples` counts those successful operations
 (one sample per transaction, using duration per try). `writeFailures` counts observed Firebase
 errors other than timeouts, and `writeTimeouts` counts timeouts. Both failure counters are disjoint

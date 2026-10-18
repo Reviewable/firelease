@@ -143,6 +143,28 @@ test('database stats persist, appear in ping reports, and reset between tests', 
   assert.equal(firelease.stats.databases[0].writeLatency, 40);
 });
 
+test('unexpected successful transaction outcomes report an error without recording a sample',
+  () => {
+    const ref = attach(new FakeQueueRef('unexpected-outcome', 'queues/jobs'));
+    const errors: Error[] = [];
+    firelease.settings.captureError = error => {
+      assert.equal(error.firelease?.phase, 'write-metric');
+      errors.push(error);
+    };
+    firelease.settings.captureWriteMetrics = () => {assert.fail('Unexpected write metric');};
+    for (const outcome of [undefined, 'error' as const]) {
+      assert.doesNotThrow(() => {
+        observe(ref, {method: 'transaction', transaction: {outcome, tries: 1, duration: 100}});
+      });
+    }
+    assert.deepEqual(errors.map(error => error.message), [
+      'Unexpected successful transaction outcome: undefined',
+      'Unexpected successful transaction outcome: error'
+    ]);
+    assert.equal(firelease.stats.databases[0].writeLatency, null);
+    assert.equal(firelease.stats.databases[0].writeSamples, 0);
+  });
+
 type RawSnapshot = {ref: RawReference, val: () => unknown};
 type TransactionUpdate = (value: unknown) => unknown;
 type TransactionComplete = (error: Error | null, committed: boolean, snap?: RawSnapshot) => void;
