@@ -129,14 +129,12 @@ test('database stats persist, appear in ping reports, and reset between tests', 
   }]);
 
   const oldStats = firelease.stats.databases[0];
-  const startTime = performance.now();
   firelease.settings.captureWriteMetrics = () => undefined;
   TESTABLES.resetBetweenTests();
   assert.equal(firelease.stats.databases.length, 0);
   assert.equal(firelease.settings.captureWriteMetrics, undefined);
   observe(ref);
   attach(source);
-  observe(ref, {startTime});
   observe(ref, {duration: 40});
   assert.equal(oldStats.writeSamples, 1);
   assert.equal(firelease.stats.databases[0].writeSamples, 1);
@@ -230,6 +228,30 @@ function attachNative(ref: NodeFire, key = 'jobs') {
   Object.defineProperty(source, 'root', {value: ref.root});
   attach(source);
 }
+
+test('writes started before attachment are observed when they finish afterward', async () => {
+  const {raw, ref} = nativeRef('write-before-attachment');
+  let finishWrite: (() => void) | undefined;
+  let finishPrefetch: ((snap: RawSnapshot) => void) | undefined;
+  raw.operations.write = () => new Promise<void>(resolve => {finishWrite = resolve;});
+  raw.operations.prefetch = callback => {finishPrefetch = callback;};
+  raw.operations.transaction = (update, complete) => {
+    const value = update(1);
+    complete(null, true, {ref: raw, val: () => value});
+  };
+  const write = ref.set(1);
+  const transaction = ref.transaction(value => Number(value) + 1);
+  await waitFor(() => !!finishWrite && !!finishPrefetch);
+  attachNative(ref);
+  const metrics: WriteMetric[] = [];
+  firelease.settings.captureWriteMetrics = metric => {metrics.push(metric);};
+  finishWrite!();
+  finishPrefetch!({ref: raw, val: () => 1});
+  await Promise.all([write, transaction]);
+  assert.deepEqual(metrics.map(metric => metric.method).sort(), ['set', 'transaction']);
+  assert(metrics.every(metric => metric.outcome === 'success'));
+  assert.equal(firelease.stats.databases[0].writeSamples, 2);
+});
 
 test('real NodeFire operations are observed once across registrations and resets', async () => {
   const {raw, ref} = nativeRef('write-native');

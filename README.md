@@ -161,8 +161,9 @@ round-trip measurements. No synthetic latency floor is applied.
 Firebase errors instead have `outcome: 'failure'` or `'timeout'`, `code`, and `elapsed` milliseconds
 until rejection, excluding transaction prefetch. They have no successful duration or latency.
 A timeout does not establish when or whether the underlying write completes. Skipped/aborted
-transactions, transactions that fail during prefetch before any try, and application errors thrown
-by transaction update functions are omitted. Pushes without a value create no write observation.
+transactions, transactions that fail during prefetch before any try, and application errors without
+Firebase error metadata are omitted. Rethrowing a prior Firebase error from a transaction update
+function can count it again as a write failure. Pushes without a value create no write observation.
 Writes made directly through the Firebase SDK are outside NodeFire's observation scope.
 
 The callback can feed latency distributions and separate failure/timeout counters into your metrics
@@ -206,5 +207,6 @@ Use `captureWriteMetrics` for distributions; an EMA is not a percentile.
 Database counts accumulate from worker attachment and persist across pings, reconnects, shutdown,
 and resuming queues through `settings.globalMaxConcurrent`. They do not reset at each ping. The
 stats remain JSON-serializable and contain no database references or callbacks. Test resets clear
-the database registry, stats, and callback without adding another NodeFire observer; writes started
-before registration are excluded. Write telemetry does not affect queue health or concurrency.
+the database registry, stats, and callback without adding another NodeFire observer. Writes that
+started before attachment are included if they complete after attachment; tests must drain any
+in-flight writes before resetting. Write telemetry does not affect queue health or concurrency.

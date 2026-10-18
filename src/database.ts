@@ -30,9 +30,7 @@ export type WriteMetric = {
 export type CaptureWriteMetrics = (metric: WriteMetric) => undefined;
 
 export class DatabaseWriteObserver {
-  private readonly databases: {
-    root: NodeFire, stats: DatabaseStats, registeredAt: number
-  }[] = [];
+  private readonly databases: {root: NodeFire, stats: DatabaseStats}[] = [];
 
   constructor(
     private readonly stats: FireleaseStats,
@@ -46,7 +44,7 @@ export class DatabaseWriteObserver {
     const root = ref.root;
     if (_.some(this.databases, database => database.root.isEqual(root))) return;
     const stats = new DatabaseStats(root.toString(), root.database.app.name);
-    this.databases.push({root, stats, registeredAt: performance.now()});
+    this.databases.push({root, stats});
     this.stats.databases.push(stats);
   }
 
@@ -80,8 +78,7 @@ export class DatabaseWriteObserver {
 
     const root = op.ref.root;
     const database = _.find(this.databases, candidate => candidate.root.isEqual(root));
-    // Also exclude completions of writes started before registration or before a test reset.
-    if (!database || op.startTime! < database.registeredAt) return;
+    if (!database) return;
     const {stats} = database;
     const tries = transaction ? transaction.tries! : 1;
     const identity = {ref: stats.ref, app: stats.app, method: op.method as WriteMethod, tries};
@@ -97,7 +94,7 @@ export class DatabaseWriteObserver {
       metric = {...identity, outcome: 'success', duration: duration!, latency};
     } else {
       const error = op.error as Error & {firebase?: {code?: string}};
-      // In particular, user transaction-update errors are not Firebase write observations.
+      // NodeFire marks Firebase errors; ordinary application errors have no such metadata.
       if (!error.firebase) return;
       const code = _.toLower(error.firebase.code ?? '');
       const outcome = code === 'timeout' ? 'timeout' : 'failure';
