@@ -68,11 +68,12 @@ test('stats are derived through the hierarchy on demand', () => {
   assert.deepStrictEqual(
     Object.keys(hierarchyStats),
     [
-      'queues', 'healthy', 'sickQueues', 'sickSources', 'stuckTasks', 'maxLatency',
+      'databases', 'queues', 'healthy', 'sickQueues', 'sickSources', 'stuckTasks', 'maxLatency',
       'leaseTransactions', 'tasksAcquired'
     ],
   );
   assert.deepStrictEqual(JSON.parse(JSON.stringify(hierarchyStats)), {
+    databases: [],
     queues: [{
       tasksAcquired: 3,
       ref: 'https://stats.example.test/queues/jobs',

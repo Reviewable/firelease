@@ -3,11 +3,10 @@ import ms from 'ms';
 import NodeFire, {type TransactionMetadata} from 'nodefire';
 import * as timers from 'safe-timers';
 import {AsyncLocalStorage} from 'node:async_hooks';
+import {DatabaseWriteObserver, type CaptureWriteMetrics} from './database';
 import {
   FireleaseStats, QueueSourceStats, QueueStats, type QueueSourceMode
 } from './stats';
-
-export const TESTABLES = {resetBetweenTests, waitUntilDeleted, getQueueCheckCooldown};
 
 const PING_INTERVAL = ms('1m');
 const PING_KEY = 'ping';
@@ -105,6 +104,7 @@ export interface FireleaseSettings {
   queueCheckInterval: Duration;
   queueLoadTimeout: Duration;
   captureError: (error: FireleaseError) => void;
+  captureWriteMetrics?: CaptureWriteMetrics;
 }
 
 export interface FireleaseApi {
@@ -215,6 +215,15 @@ export const settings: FireleaseSettings = {
     queueLoadTimeout = normalizedValue;
   },
   captureError: defaultCaptureError
+};
+
+const databaseWrites = new DatabaseWriteObserver(stats, settings);
+
+export const TESTABLES = {
+  resetBetweenTests, waitUntilDeleted, getQueueCheckCooldown,
+  observeWriteOperation: (op: Parameters<DatabaseWriteObserver['observe']>[0]) => {
+    databaseWrites.observe(op);
+  }
 };
 
 const firelease = Object.freeze({
@@ -1184,6 +1193,7 @@ export function attachWorker(
 ): void {
   const queue = new Queue(refOrRefs, options, worker);
   queues.push(queue);
+  for (const ref of queue.refs) databaseWrites.register(ref);
   queue.start();
 }
 
@@ -1405,6 +1415,7 @@ function resetBetweenTests() {
   });
   queues.length = 0;
   stats.queues.length = 0;
+  databaseWrites.reset();
   blacklistedTaskKeys.clear();
   globalMaxConcurrent = Number.MAX_VALUE;
   globalNumConcurrent = 0;
@@ -1422,6 +1433,7 @@ function resetBetweenTests() {
     healthyPingLatency: '1.5s'
   });
   settings.captureError = defaultCaptureError;
+  delete settings.captureWriteMetrics;
 }
 
 export default firelease;

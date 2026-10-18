@@ -3,6 +3,15 @@ import _ from 'lodash';
 export type QueueSourceMode = 'full' | 'safe';
 export type QueueMode = QueueSourceMode | 'mixed';
 
+export class DatabaseStats {
+  writeLatency: number | null = null;
+  writeSamples = 0;
+  writeFailures = 0;
+  writeTimeouts = 0;
+
+  constructor(readonly ref: string, readonly app: string) {}
+}
+
 export interface LeaseTransactionStats {
   acquired: number;
   contended: number;
@@ -100,6 +109,7 @@ export class QueueStats {
 
 export class FireleaseStats {
   readonly #getStuckTasks: () => number;
+  readonly databases: DatabaseStats[] = [];
   readonly queues: QueueStats[] = [];
 
   constructor(getStuckTasks: () => number) {

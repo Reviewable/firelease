@@ -148,6 +148,27 @@ is fatal because no bounded listener is available to process the queue.
 
 A function used to capture errors.  Defaults to logging the stack to the console, but you may want to change it to something else in production.  The function should take a single exception argument.
 
+```settings.captureWriteMetrics: {function(WriteMetric) | undefined}```
+
+Optional synchronous callback for every observed write to a database used by an attached worker,
+including writes outside queue paths. Requires NodeFire 7.2.0 or later. Each metric includes the
+database root URL (`ref`), Firebase app name (`app`), `method` (`set`, `update`, `remove`, `push`, or
+`transaction`), and `tries` (1 for ordinary writes). Successful observations have `outcome: 'success'`,
+`duration` in milliseconds, and `latency` equal to `duration / tries`. For transactions, duration is
+the measured transaction phase, excluding prefetch; per-try latency is an average, not individual
+round-trip measurements. No synthetic latency floor is applied.
+
+Firebase errors instead have `outcome: 'failure'` or `'timeout'`, `code`, and `elapsed` milliseconds
+until rejection, excluding transaction prefetch. They have no successful duration or latency.
+A timeout does not establish when or whether the underlying write completes. Skipped/aborted
+transactions, transactions that fail during prefetch before any try, and application errors thrown
+by transaction update functions are omitted. Pushes without a value create no write observation.
+Writes made directly through the Firebase SDK are outside NodeFire's observation scope.
+
+The callback can feed latency distributions and separate failure/timeout counters into your metrics
+system. Firelease does not publish metrics to Sentry or any other service. Callback errors are
+reported through `captureError` with phase `write-metric` and cannot change write results.
+
 ```defaults: {Object}```
 
 Mutable default option values for all subsequent attachWorker calls.  See that function for details.
@@ -172,3 +193,18 @@ shallow REST check, `sizeDelta` when the safe listener was below its limit (the 
 buffered task count), and ping health and latency.  Queue size is reported only for adaptive
 sources; it remains `null` for sources with an explicit finite `bufferSize` because a limited
 listener cannot determine the true queue size.
+
+`databases` contains one entry per Firebase database connection used by attached workers. Each
+entry identifies the root URL (`ref`) and Firebase app name (`app`); distinct apps accessing the
+same URL remain separate. `writeLatency` is an exponential moving average (alpha 0.1) of successful
+write latency in milliseconds, initially `null`. `writeSamples` counts those successful operations
+(one sample per transaction, using duration per try). `writeFailures` counts observed Firebase
+errors other than timeouts, and `writeTimeouts` counts timeouts. Both failure counters are disjoint
+from successful samples. Permission and validation errors count as failures, not latency samples.
+Use `captureWriteMetrics` for distributions; an EMA is not a percentile.
+
+Database counts accumulate from worker attachment and persist across pings, reconnects, shutdown,
+and resuming queues through `settings.globalMaxConcurrent`. They do not reset at each ping. The
+stats remain JSON-serializable and contain no database references or callbacks. Test resets clear
+the database registry, stats, and callback without adding another NodeFire observer; writes started
+before registration are excluded. Write telemetry does not affect queue health or concurrency.

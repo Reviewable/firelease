@@ -67,6 +67,10 @@ class FakeDatabaseRoot {
   isEqual(other: unknown) {
     return other === this;
   }
+
+  toString() {
+    return `https://${this.name}.example.test/`;
+  }
 }
 
 export class FakeTaskRef {
