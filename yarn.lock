@@ -2253,12 +2253,14 @@ __metadata:
     firebase-childrenkeys: "npm:^3.3.0"
     lodash: "npm:4.x"
     ms: "npm:2.x"
-    nodefire: "npm:^7.1.0"
+    nodefire: "npm:^7.2.0"
     npm-check-updates: "npm:^22.2.9"
     reviewable-configs: "Reviewable/reviewable-configs#master"
     safe-timers: "npm:^1.1.0"
     tsx: "npm:^4.23.1"
     typescript: "npm:^6.0.3"
+  peerDependencies:
+    nodefire: ^7.2.0
   languageName: unknown
   linkType: soft
 
@@ -3513,9 +3515,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"nodefire@npm:^7.1.0":
-  version: 7.1.2
-  resolution: "nodefire@npm:7.1.2"
+"nodefire@npm:^7.2.0":
+  version: 7.3.0
+  resolution: "nodefire@npm:7.3.0"
   dependencies:
     firebase-admin: "npm:14.x"
     firebase-childrenkeys: "npm:^3.3.0"
@@ -3523,7 +3525,7 @@ __metadata:
     lodash: "npm:^4.17.21"
     lru-cache: "npm:11.x"
     safe-timers: "npm:^1.1.0"
-  checksum: 10c0/f2717ac2e26fa3f40e7f214f8dc18268ac65b18b6c52d5ef8cc22b4f3dc619dbe054b916f0ca1631c71454c6606356bf3dd85f6178a7f3a7ff6bb224feb10703
+  checksum: 10c0/80d1972fdd7c2a0a1e78f9f592cf5fc261b91a9ff2e2f20eef75bc92f56cf978c02a2aadf2c4e1d23e64599658835c90443cfb7e506924fc3fd901fb3cfa2e7f
   languageName: node
   linkType: hard
 

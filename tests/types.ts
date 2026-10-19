@@ -7,7 +7,8 @@ import firelease, {
   type FireleaseStats, type Lease, type LeaseItem, type LeaseTransactionStats, type PingReport,
   type LeaseTransactionOutcome, type QueueOptions,
   type QueueMode, type QueueRef, type QueueSourceMode, type QueueSourceStats, type QueueStats,
-  type RetryDirective, type Worker, type WorkerItem, type WorkerResult
+  type RetryDirective, type Worker, type WorkerItem, type WorkerResult,
+  type CaptureWriteMetrics, type DatabaseStats, type WriteMethod, type WriteMetric
 } from '../src';
 
 // Verify the package's default and named TypeScript exports.
@@ -62,6 +63,29 @@ void [
   asyncLeaseTransactionMetrics
 ];
 TESTABLES.resetBetweenTests();
+
+const captureWriteMetrics: CaptureWriteMetrics = metric => {
+  const observation: WriteMetric = metric;
+  const method: WriteMethod = metric.method;
+  if (metric.outcome === 'success') {
+    const latency: number = metric.latency;
+    const elapsed: number = metric.duration;
+    void [latency, elapsed];
+    // @ts-expect-error Successful writes have completion duration, not failure elapsed time.
+    void metric.elapsed;
+  } else {
+    const elapsed: number = metric.elapsed;
+    void elapsed;
+    // @ts-expect-error Failures and timeouts have no successful latency.
+    void metric.latency;
+  }
+  void [observation, method];
+};
+firelease.settings.captureWriteMetrics = captureWriteMetrics;
+// @ts-expect-error Write metric callbacks must be synchronous.
+firelease.settings.captureWriteMetrics = async () => undefined;
+const databaseStats: DatabaseStats[] = pingReport.databases;
+void databaseStats;
 
 // @ts-expect-error Generator workers are no longer supported.
 firelease.attachWorker(queueRef, generatorWorker);
