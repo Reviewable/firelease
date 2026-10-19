@@ -176,6 +176,8 @@ the update function (`tries: 0`). They never contribute a successful latency sam
 The callback can feed latency distributions and separate failure/timeout counters into your metrics
 system. Firelease does not publish metrics to Sentry or any other service. Callback errors are
 reported through `captureError` with phase `write-metric` and cannot change write results.
+The callback must not write through NodeFire to an observed database, even outside queue paths:
+each such write triggers another metric callback, creating an endless feedback loop.
 
 ```defaults: {Object}```
 
