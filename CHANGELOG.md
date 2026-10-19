@@ -1,6 +1,6 @@
 # Changelog
 
-## 4.5.0 (unreleased)
+## 4.5.0
 
 - Add per-database write statistics and the optional `settings.captureWriteMetrics` callback.
 - **Upgrade note:** NodeFire is now a peer dependency instead of a regular dependency. Applications
