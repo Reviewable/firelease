@@ -5,15 +5,16 @@ import type {FireleaseError, FireleaseSettings} from './firelease';
 import {DatabaseStats, type FireleaseStats} from './stats';
 
 const WRITE_LATENCY_ALPHA = 0.1;
-const WRITE_METHODS = new Set(['set', 'update', 'remove', 'push', 'transaction']);
+const WRITE_METHODS = ['set', 'update', 'remove', 'push', 'transaction'] as const;
 
-export type WriteMethod = 'set' | 'update' | 'remove' | 'push' | 'transaction';
+export type WriteMethod = typeof WRITE_METHODS[number];
 
 /** Timings are milliseconds. Transaction timings exclude prefetch. */
 export type WriteMetric = {
   readonly ref: string;
   readonly app: string;
   readonly method: WriteMethod;
+  /** Zero if a transaction fails before Firebase invokes its update function. */
   readonly tries: number;
 } & ({
   readonly outcome: 'success';
@@ -68,11 +69,12 @@ export class DatabaseWriteObserver {
   }
 
   private record(op: OperationDescriptor) {
-    if (!WRITE_METHODS.has(op.method) || !Number.isFinite(op.startTime)) return;
-    const transaction = op.method === 'transaction' ? op.transaction : undefined;
-    if (op.method === 'transaction' &&
+    const {method} = op;
+    if (!isWriteMethod(method) || !Number.isFinite(op.startTime)) return;
+    const transaction = method === 'transaction' ? op.transaction : undefined;
+    if (method === 'transaction' &&
         (!transaction || transaction.outcome === 'skip' ||
-          !Number.isInteger(transaction.tries) || transaction.tries! < 1)) return;
+          !Number.isInteger(transaction.tries) || transaction.tries! < 0)) return;
     const duration = transaction ? transaction.duration : op.duration;
     if (!Number.isFinite(duration) || duration! < 0) return;
 
@@ -81,9 +83,10 @@ export class DatabaseWriteObserver {
     if (!database) return;
     const {stats} = database;
     const tries = transaction ? transaction.tries! : 1;
-    const identity = {ref: stats.ref, app: stats.app, method: op.method as WriteMethod, tries};
+    const identity = {ref: stats.ref, app: stats.app, method, tries};
     let metric: WriteMetric;
     if (op.error === undefined) {
+      if (!tries) return;
       if (transaction && transaction.outcome !== 'commit') {
         throw new Error(`Unexpected successful transaction outcome: ${transaction.outcome}`);
       }
@@ -96,7 +99,7 @@ export class DatabaseWriteObserver {
       const error = op.error as Error & {firebase?: {code?: string}};
       // NodeFire marks Firebase errors; ordinary application errors have no such metadata.
       if (!error.firebase) return;
-      const code = _.toLower(error.firebase.code ?? '');
+      const code = error.firebase.code ?? '';
       const outcome = code === 'timeout' ? 'timeout' : 'failure';
       if (outcome === 'timeout') stats.writeTimeouts++; else stats.writeFailures++;
       metric = {...identity, outcome, elapsed: duration!, code};
@@ -108,4 +111,8 @@ export class DatabaseWriteObserver {
     this.databases.length = 0;
     this.stats.databases.length = 0;
   }
+}
+
+function isWriteMethod(method: string): method is WriteMethod {
+  return _.includes(WRITE_METHODS, method);
 }

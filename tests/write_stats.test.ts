@@ -377,3 +377,36 @@ test('reporting failures cannot change real NodeFire operation results', async t
   assert.equal(firelease.stats.databases[0].writeSamples, 1);
   assert.equal(firelease.stats.databases[0].writeFailures, 1);
 });
+
+test('zero-try transactions count failures and timeouts after starting Firebase', async () => {
+  const {raw, ref} = nativeRef('write-native-zero-tries');
+  attachNative(ref);
+  const metrics: WriteMetric[] = [];
+  firelease.settings.captureWriteMetrics = metric => {metrics.push(metric);};
+  let update!: TransactionUpdate;
+  let complete!: TransactionComplete;
+  raw.operations.transaction = (callback, done) => {update = callback; complete = done;};
+  const timedOut = ref.transaction(() => 2, {prefetchValue: false, timeout: 10});
+  await assert.rejects(timedOut, /timeout/);
+  assert.deepEqual(metrics[0], {
+    ref: ref.toString(), app: 'write-native-zero-tries', method: 'transaction', tries: 0,
+    outcome: 'timeout', elapsed: timedOut.transaction.duration, code: 'timeout'
+  });
+  assert.equal(update(1), undefined);
+  complete(null, false);
+  await delay(0);
+  assert.equal(metrics.length, 1);
+
+  raw.operations.transaction = (callback, done) => {done(new Error('permission_denied'), false);};
+  const failed = ref.transaction(() => 2, {prefetchValue: false});
+  await assert.rejects(failed, /permission_denied/);
+  assert.deepEqual(metrics[1], {
+    ref: ref.toString(), app: 'write-native-zero-tries', method: 'transaction', tries: 0,
+    outcome: 'failure', elapsed: failed.transaction.duration, code: 'permission_denied'
+  });
+  const stats = firelease.stats.databases[0];
+  assert.equal(stats.writeTimeouts, 1);
+  assert.equal(stats.writeFailures, 1);
+  assert.equal(stats.writeSamples, 0);
+  assert.equal(stats.writeLatency, null);
+});

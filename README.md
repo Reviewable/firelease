@@ -5,6 +5,9 @@ Firelease
 
 A Firebase queue consumer for Node with at-least-once and at-most-once semantics, fine-grained concurrency controls, and support for promises.  Built on top of [Nodefire](https://github.com/pkaminski/nodefire).
 
+Install NodeFire 7.2.0 or later in the 7.x series alongside Firelease. It is a peer dependency so
+the application and Firelease share one NodeFire instance and its operation interceptors.
+
 API
 ---
 
@@ -153,18 +156,22 @@ A function used to capture errors.  Defaults to logging the stack to the console
 Optional synchronous callback for every observed write to a database used by an attached worker,
 including writes outside queue paths. Requires NodeFire 7.2.0 or later. Each metric includes the
 database root URL (`ref`), Firebase app name (`app`), `method` (`set`, `update`, `remove`, `push`, or
-`transaction`), and `tries` (1 for ordinary writes). Successful observations have `outcome: 'success'`,
-`duration` in milliseconds, and `latency` equal to `duration / tries`. For transactions, duration is
-the measured transaction phase, excluding prefetch; per-try latency is an average, not individual
+`transaction`), and `tries` (1 for ordinary writes, possibly 0 for failed transactions).
+Successful observations have `outcome: 'success'`, `duration` in milliseconds, and `latency` equal to
+`duration / tries`. For transactions, duration is the measured transaction phase, excluding prefetch;
+per-try latency is an average, not individual
 round-trip measurements. No synthetic latency floor is applied.
 
 Firebase errors instead have `outcome: 'failure'` or `'timeout'`, `code`, and `elapsed` milliseconds
 until rejection, excluding transaction prefetch. They have no successful duration or latency.
 A timeout does not establish when or whether the underlying write completes. Skipped/aborted
-transactions, transactions that fail during prefetch before any try, and application errors without
-Firebase error metadata are omitted. Rethrowing a prior Firebase error from a transaction update
-function can count it again as a write failure. Pushes without a value create no write observation.
+transactions, transactions that fail during prefetch before the transaction phase starts, and
+application errors without Firebase error metadata are omitted. Rethrowing a prior Firebase error
+from a transaction update function can count it again as a write failure. Pushes without a value
+create no write observation.
 Writes made directly through the Firebase SDK are outside NodeFire's observation scope.
+Once the transaction phase starts, failures and timeouts count even if Firebase has not yet invoked
+the update function (`tries: 0`). They never contribute a successful latency sample.
 
 The callback can feed latency distributions and separate failure/timeout counters into your metrics
 system. Firelease does not publish metrics to Sentry or any other service. Callback errors are
