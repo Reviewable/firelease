@@ -8,6 +8,68 @@ A Firebase queue consumer for Node with at-least-once and at-most-once semantics
 Install NodeFire 7.2.0 or later in the 7.x series alongside Firelease. It is a peer dependency so
 the application and Firelease share one NodeFire instance and its operation interceptors.
 
+Affinity jitter
+---------------
+
+Enable `{leaseJitter: true}` on queues that can tolerate a small pickup delay. Each process hashes
+its startup identity with `_lease.affinityKey`, or the full task URL when the field is absent.
+Related tasks with the same affinity tend to run on the same process; different affinities spread
+across processes. This is a preference, not ownership or serialization. Busy or disconnected
+processes do not prevent others from acquiring tasks. A process restart changes its identity.
+
+For example, producers can set `_lease: {affinityKey: 'owner|repo|123'}` across queues handling the
+same pull request. Set it when enqueuing, before consumers schedule acquisition; `preprocess` runs
+too late for the first acquisition. Preserve the field when returning a replacement lease object.
+Add this optional string to any database validation rules and encrypt it if it contains private
+identifiers. Every enabled source on a process uses the same identity, but learns its own delay
+window, so affinity across sources is approximate.
+
+Jitter applies to live arrivals and lease expiries. Initial backlog, overdue tasks, retries after
+transaction failures, and work held up by local concurrency limits run without additional jitter.
+Each eligibility period gets one deadline; ordinary updates and scans cannot postpone it. Waiting
+does not reserve a worker slot. An observed competing lease/deletion cancels a pending transaction;
+Firebase transactions still provide the correctness guarantee when races remain. Disconnection,
+blacklisting, and listener replacement cancel waits without treating them as contention feedback.
+
+The window starts at 250 ms and stays between 25 ms and 5 s. Contended jittered attempts increase
+it; suppressed attempts decrease it, targeting a 5% race rate among those two outcomes. Successful
+acquisitions and observed lease broadcasts estimate propagation time. Failures do not train the
+controller. A window is the maximum possible delay, not the expected winning delay; with many idle
+workers the earliest hashed deadline is typically much smaller. This trades pickup latency for
+fewer transactions and is most useful on lightly loaded queues with many idle consumers.
+
+Enabled sources expose `leaseJitter: {scheduled, suppressed, window}` in stats. The counts are
+lifetime totals; queue/global rollups sum them and average windows across enabled children. Window
+and scheduled counts are available for logs and diagnostics; exporting every value as a separate
+metric is unnecessary. Measure amplification from existing transaction counts and use the jitter
+callback for an aggregated suppression count and sampled pickup timing. Do not put affinity or
+task keys in metric attributes.
+
+On-demand live testing
+----------------------
+
+`yarn test` uses local fakes and never connects to Firebase. The separate live harness requires a
+test database URL, service-account credentials, and an explicit `--live` flag:
+
+```bash
+GOOGLE_APPLICATION_CREDENTIALS=/path/to/test-service-account.json \
+  yarn test:live --live --database https://your-test-project-default-rtdb.firebaseio.com \
+  --workers 8 --tasks 120 --output live-results.json
+```
+
+The harness launches independent Node processes using the installed NodeFire/Admin SDK, compares
+baseline and adaptive contention, and checks recurring affinity, busy/disconnected fallback,
+retries, extension, and backlog replay with full and limited listeners. It checks first-acquisition
+flags and duplicate processing, saves actual counts and pickup percentiles, and removes only its
+UUID-scoped `/firelease-tests` subtree. It never changes security rules. Admin credentials work
+with `.read` and `.write` both `false`. An optional `_lease/expiry` index on test queue paths avoids
+limited-query warnings; the small fixtures also work without it.
+
+Defaults use eight workers plus one coordinator; hard bounds are 20 workers and 300 tasks per
+mode. Tasks are small and run sequentially in the comparison, rather than producing an unbounded
+load. Use a dedicated test project, keep credentials outside the checkout, and do not run this in
+ordinary CI. Abrupt termination can leave a UUID subtree for manual cleanup.
+
 API
 ---
 
@@ -56,6 +118,14 @@ paths concurrently.
     outcome, NodeFire transaction tries, and transaction duration in milliseconds.  Missing optional
     NodeFire metadata is reported as zero.  The callback must be synchronous.  Callback errors are
     reported through `settings.captureError` and do not affect task processing.
+  * `leaseJitter: {boolean}` opt into adaptive affinity jitter. Defaults to `false`.
+  * `captureLeaseJitterMetrics: {function(Object)}` a synchronous callback receiving either
+    `{outcome: 'suppressed'}` when a pending attempt is canceled by an observed lease/deletion,
+    or `{outcome: 'acquired', pickupDelay}` after a jittered acquisition. `pickupDelay` is the
+    time in milliseconds from locally observed eligibility to completion of acquisition, including
+    the transaction (new arrivals start at receipt; scheduled leases start at their expiry).
+    Callback errors do not affect scheduling. The callback itself is not sampled; aggregate
+    counters and sample timing distributions in the consuming application.
 
 * `@param {function(Object):RETRY | number | string | undefined}` worker The worker function that
   handles enqueued tasks.  It will be given a task object as argument, with a special $ref attribute

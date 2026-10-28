@@ -1,0 +1,123 @@
+{
+  "workers": 20,
+  "tasksPerMode": 120,
+  "scenarios": {
+    "baseline": {
+      "acquired": 120,
+      "contended": 2264,
+      "failed": 0,
+      "tries": 4648,
+      "suppressed": 0,
+      "amplification": 19.866666666666667,
+      "pickupMedianMs": 69,
+      "pickupP95Ms": 74,
+      "windowsMs": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "adaptive": {
+      "acquired": 120,
+      "contended": 158,
+      "failed": 0,
+      "tries": 436,
+      "suppressed": 1872,
+      "amplification": 2.316666666666667,
+      "pickupMedianMs": 102,
+      "pickupP95Ms": 198,
+      "windowsMs": [
+        801,
+        824,
+        417,
+        237,
+        440,
+        826,
+        298,
+        362,
+        696,
+        2630,
+        520,
+        1118,
+        1132,
+        307,
+        479,
+        1251,
+        388,
+        284,
+        696,
+        371
+      ]
+    },
+    "lifecycle": {
+      "affinityWins": 20,
+      "affinityTasks": 20,
+      "busyFallback": true,
+      "disconnectFallback": true,
+      "retryAttempts": [
+        1,
+        2
+      ],
+      "extensionAcquisitions": 1
+    },
+    "backlog": {
+      "acquired": 12,
+      "jitterScheduled": 0
+    },
+    "limited-backlog": {
+      "acquired": 12,
+      "jitterScheduled": 0
+    },
+    "limited-arrivals": {
+      "acquired": 20,
+      "contended": 47,
+      "failed": 0,
+      "tries": 114,
+      "suppressed": 290,
+      "amplification": 3.35,
+      "pickupMedianMs": 104,
+      "pickupP95Ms": 134,
+      "windowsMs": [
+        312,
+        450,
+        638,
+        775,
+        294,
+        297,
+        464,
+        622,
+        600,
+        477,
+        460,
+        666,
+        677,
+        811,
+        790,
+        278,
+        450,
+        637,
+        307,
+        456
+      ]
+    }
+  },
+  "passed": true,
+  "cleanedUp": true
+}
