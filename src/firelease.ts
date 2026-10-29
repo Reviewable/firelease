@@ -350,10 +350,14 @@ class Task {
         // Pings compete by deleting, not leasing. A retried or canceled deletion lost a race;
         // keep their feedback local so existing application task metrics still exclude pings.
         const transaction = transactionPromise.transaction;
-        if (transaction?.tries && transaction.duration !== undefined) {
-          this.source.jitter!.observePropagation(transaction.duration / transaction.tries);
+        // Without an attempt count we cannot distinguish a clean deletion from a retried one.
+        if (transaction?.tries !== undefined && transaction.tries > 0) {
+          if (transaction.duration !== undefined) {
+            this.source.jitter!.observePropagation(transaction.duration / transaction.tries);
+          }
+          this.source.jitter!.record(
+            acquired && transaction.tries === 1 ? 'acquired' : 'contended');
         }
-        this.source.jitter!.record(acquired && transaction?.tries === 1 ? 'acquired' : 'contended');
       }
       if (acquired && item !== null && this.ref.key !== PING_KEY) {
         this.recordLeaseTransaction('acquired', transactionPromise.transaction);

@@ -250,6 +250,29 @@ test('single-try pings decay the window while retried deletions grow it', async 
   }
 });
 
+test('ping feedback skips missing or zero transaction attempt counts', async () => {
+  for (const tries of [undefined, 0]) {
+    TESTABLES.resetBetweenTests();
+    try {
+      const source = new FakeQueueRef('ping-unknown-tries', 'queue');
+      source.omitTransactionMetadata = tries === undefined;
+      source.transactionTries = tries ?? 1;
+      firelease.attachWorker(asNodeFire(source), {leaseJitter: true}, () => {
+        assert.fail('Pings never enter application handlers');
+      });
+      await waitFor(() => firelease.stats.queues[0]?.mode === 'full');
+      const ping = source.addTask('ping', {timestamp: source.now, _lease: {expiry: source.now}});
+      await waitFor(() => !ping.value && firelease.listTasksInProgress().length === 0);
+      assert.equal(firelease.stats.leaseJitter?.scheduled, 1);
+      assert.equal(firelease.stats.leaseJitter?.window, 250);
+      assert.equal(firelease.stats.leaseJitter?.suppressed, 0);
+      assert.equal(firelease.stats.leaseTransactions.acquired, 0);
+    } finally {
+      TESTABLES.resetBetweenTests();
+    }
+  }
+});
+
 test('limited removals cancel waits without treating old snapshots as deletion proof', async () => {
   for (const key of ['fresh', 'ping']) {
     TESTABLES.resetBetweenTests();
