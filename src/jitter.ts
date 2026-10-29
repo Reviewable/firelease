@@ -1,6 +1,4 @@
-import _ from 'lodash';
 import {hash, randomUUID} from 'node:crypto';
-import ms from 'ms';
 import {performance} from 'node:perf_hooks';
 import type {Duration} from './firelease';
 import type {LeaseJitterStats} from './stats';
@@ -37,6 +35,12 @@ export interface LeaseJitterOptions {
   maxWindow?: Duration;
 }
 
+export interface NormalizedLeaseJitterOptions {
+  targetRaceRate?: number;
+  minWindow?: number;
+  maxWindow?: number;
+}
+
 export type LeaseJitterMetric =
   {outcome: 'suppressed'} | {outcome: 'acquired', pickupDelay: number};
 export type CaptureLeaseJitterMetrics = (metric: LeaseJitterMetric) => undefined;
@@ -49,15 +53,13 @@ export class LeaseJitter {
   private propagation = 100;
 
   constructor(
-    options: LeaseJitterOptions = {}, private readonly instanceId: string = INSTANCE_ID,
+    options: NormalizedLeaseJitterOptions = {}, private readonly instanceId: string = INSTANCE_ID,
     private readonly gain = new LeaseJitterGain()
   ) {
     this.options = {
       targetRaceRate: options.targetRaceRate ?? 0.05,
-      minWindow: _.isString(options.minWindow) ?
-        ms(options.minWindow as ms.StringValue) : options.minWindow ?? 0,
-      maxWindow: _.isString(options.maxWindow) ?
-        ms(options.maxWindow as ms.StringValue) : options.maxWindow ?? 5000
+      minWindow: options.minWindow ?? 0,
+      maxWindow: options.maxWindow ?? 5000
     };
     const {targetRaceRate, minWindow, maxWindow} = this.options;
     if (!Number.isFinite(targetRaceRate) || targetRaceRate <= 0 || targetRaceRate >= 1 ||

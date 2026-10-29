@@ -83,7 +83,7 @@ test('deadlines survive rescans and payload updates and renew after lease expiry
   const deadline = schedule.deadline(1000, true);
   assert(deadline > 1000);
   controller.record('contended');
-  schedule.update(undefined, 'pr', 1001, true, false);
+  schedule.update(undefined, 'changed-affinity', 1001, true, false);
   assert.equal(schedule.deadline(1001, true), deadline);
   assert.equal(controller.stats.scheduled, 1);
   assert.equal(schedule.start(), 1000);
@@ -164,18 +164,27 @@ test('custom bounds clamp startup and lower race targets decay more cautiously',
   assert.equal(schedule.deadline(6000, true), deadline, 'custom long waits keep their deadline');
 });
 
-test('human-readable window bounds normalize like numeric milliseconds', () => {
-  const controller = new LeaseJitter({minWindow: '0.1s', maxWindow: '1.5 seconds'}, 'test');
-  const numeric = new LeaseJitter({minWindow: 100, maxWindow: 1500}, 'test');
-  assert.deepEqual(controller.options, numeric.options);
-  assert.equal(controller.delay('pr'), numeric.delay('pr'));
-  assert.equal(new LeaseJitter({maxWindow: '100 ms'}).stats.window, 100);
-  assert.equal(new LeaseJitter({minWindow: '400ms'}).stats.window, 400);
-  assert.equal(new LeaseJitter({minWindow: '0s', maxWindow: '0ms'}).stats.window, 0);
-  for (const options of [
-    {minWindow: 'invalid'}, {maxWindow: ''}, {minWindow: '-1ms'},
-    {minWindow: '2s', maxWindow: 1000}
-  ]) assert.throws(() => new LeaseJitter(options));
+test('queue window bounds normalize once for all sources without mutating caller options', () => {
+  TESTABLES.resetBetweenTests();
+  try {
+    let reads = 0;
+    const options = {get minWindow() {reads++; return '400ms';}, maxWindow: '1.5 seconds'};
+    firelease.attachWorker(['one', 'two'].map(name => asNodeFire(new FakeQueueRef(name, 'queue'))),
+      {leaseJitter: options}, () => undefined);
+    assert.equal(firelease.stats.queues[0].sources.length, 2);
+    assert(firelease.stats.queues[0].sources.every(source => source.leaseJitter?.window === 400));
+    assert.equal(reads, 1, 'Bounds are read once per queue, not once per source');
+    assert.deepEqual(options, {minWindow: '400ms', maxWindow: '1.5 seconds'});
+    for (const leaseJitter of [
+      {minWindow: 'invalid'}, {maxWindow: ''}, {minWindow: '-1ms'},
+      {minWindow: '2s', maxWindow: 1000}
+    ]) {
+      assert.throws(() => firelease.attachWorker(
+        asNodeFire(new FakeQueueRef('invalid', 'queue')), {leaseJitter}, () => undefined));
+    }
+  } finally {
+    TESTABLES.resetBetweenTests();
+  }
 });
 
 test('propagation excludes prefetch without changing lease duration metrics', async () => {
@@ -202,69 +211,26 @@ test('propagation excludes prefetch without changing lease duration metrics', as
   }
 });
 
-test('pings jitter and cancel without invoking workers or application metrics', async () => {
-  TESTABLES.resetBetweenTests();
-  try {
-    const source = new FakeQueueRef('ping-jitter', 'queue');
-    let calls = 0;
-    firelease.attachWorker(asNodeFire(source), {
-      leaseJitter: {minWindow: '100ms', maxWindow: '0.1s'},
-      captureLeaseJitterMetrics: () => {calls++;},
-      captureLeaseTransactionMetrics: () => {calls++;}
-    }, () => {calls++;});
-    await waitFor(() => firelease.stats.queues[0]?.mode === 'full');
-    const ping = source.addTask('ping', {_lease: {affinity: slowAffinity()}});
-    assert.equal(firelease.stats.leaseJitter?.scheduled, 1);
-    assert.deepEqual(firelease.listTasksInProgress(), []);
-    await ping.remove();
-    assert.equal(firelease.stats.leaseJitter?.suppressed, 1);
-    source.addTask('ping', {});
-    await waitFor(() => !source.tasks.ping.value);
-    assert.equal(calls, 0);
-    assert.equal(firelease.stats.leaseTransactions.acquired, 0);
-  } finally {
-    TESTABLES.resetBetweenTests();
-  }
-});
-
-test('single-try pings decay the window while retried deletions grow it', async () => {
-  for (const tries of [1, 2]) {
+test('pings bypass jitter, training, affinity, and application callbacks', async () => {
+  for (const tries of [undefined, 0, 1, 2]) {
     TESTABLES.resetBetweenTests();
     try {
-      const source = new FakeQueueRef('ping-feedback', 'queue');
-      source.transactionTries = tries;
-      source.transactionDuration = tries * 100;
-      source.transactionPrefetchDuration = 1000;
-      firelease.attachWorker(asNodeFire(source), {leaseJitter: true}, () => {
-        assert.fail('Pings never enter the application handler');
-      });
-      await waitFor(() => firelease.stats.queues[0]?.mode === 'full');
-      source.addTask('ping', {timestamp: source.now, _lease: {expiry: source.now}});
-      await waitFor(() => firelease.stats.leaseJitter?.window !== 250);
-      assert.equal(firelease.stats.leaseJitter?.window, tries === 1 ? 240 : 440);
-      assert.equal(firelease.stats.leaseJitter?.suppressed, 0);
-      assert.equal(firelease.stats.leaseTransactions.acquired, 0);
-    } finally {
-      TESTABLES.resetBetweenTests();
-    }
-  }
-});
-
-test('ping feedback skips missing or zero transaction attempt counts', async () => {
-  for (const tries of [undefined, 0]) {
-    TESTABLES.resetBetweenTests();
-    try {
-      const source = new FakeQueueRef('ping-unknown-tries', 'queue');
+      const source = new FakeQueueRef('ping-bypass', 'queue');
       source.omitTransactionMetadata = tries === undefined;
       source.transactionTries = tries ?? 1;
-      firelease.attachWorker(asNodeFire(source), {leaseJitter: true}, () => {
-        assert.fail('Pings never enter application handlers');
-      });
+      let transactions = 0;
+      source.beforeTransaction = () => {transactions++;};
+      const unexpected = () => {assert.fail('Pings never enter application callbacks');};
+      firelease.attachWorker(asNodeFire(source), {
+        leaseJitter: {minWindow: 5000, maxWindow: 5000}, getAffinity: unexpected,
+        captureLeaseTransactionMetrics: unexpected, captureLeaseJitterMetrics: unexpected
+      }, unexpected);
       await waitFor(() => firelease.stats.queues[0]?.mode === 'full');
       const ping = source.addTask('ping', {timestamp: source.now, _lease: {expiry: source.now}});
+      assert.equal(transactions, 1, 'Deletion starts immediately, without a jitter timer');
       await waitFor(() => !ping.value && firelease.listTasksInProgress().length === 0);
-      assert.equal(firelease.stats.leaseJitter?.scheduled, 1);
-      assert.equal(firelease.stats.leaseJitter?.window, 250);
+      assert.equal(firelease.stats.leaseJitter?.scheduled, 0);
+      assert.equal(firelease.stats.leaseJitter?.window, 5000);
       assert.equal(firelease.stats.leaseJitter?.suppressed, 0);
       assert.equal(firelease.stats.leaseTransactions.acquired, 0);
     } finally {
@@ -281,11 +247,12 @@ test('limited removals cancel waits without treating old snapshots as deletion p
       let calls = 0;
       firelease.attachWorker(asNodeFire(source), {
         bufferSize: 1, leaseJitter: {minWindow: 1000, maxWindow: 1000},
+        getAffinity: () => slowAffinity(),
         captureLeaseJitterMetrics: () => {calls++;}
       }, () => {calls++;});
       await waitFor(() => firelease.stats.queues[0]?.sources[0].connected);
       const task = source.addTask(key, {_lease: {affinity: slowAffinity(), expiry: source.now}});
-      assert.equal(firelease.stats.leaseJitter?.scheduled, 1);
+      assert.equal(firelease.stats.leaseJitter?.scheduled, key === 'ping' ? 0 : 1);
       await task.remove();
       assert.equal(firelease.stats.leaseJitter?.suppressed, 0);
       assert.equal(firelease.stats.leaseJitter?.window, 1000);
@@ -303,7 +270,8 @@ test('limited query eviction is not clean feedback', async () => {
   try {
     const source = new FakeQueueRef('limited-eviction', 'queue');
     firelease.attachWorker(asNodeFire(source), {
-      bufferSize: 1, leaseJitter: {minWindow: 1000, maxWindow: 1000}
+      bufferSize: 1, leaseJitter: {minWindow: 1000, maxWindow: 1000},
+      getAffinity: () => slowAffinity()
     }, () => undefined);
     await waitFor(() => firelease.stats.queues[0]?.sources[0].connected);
     source.addTask('later', {_lease: {affinity: slowAffinity(), expiry: source.now}});
@@ -328,6 +296,7 @@ test('live snapshots cancel real scheduled transactions, without taking worker s
     firelease.settings.globalMaxConcurrent = 1;
     firelease.attachWorker(asNodeFire(source), {
       leaseJitter: true,
+      getAffinity: () => slowAffinity(),
       captureLeaseJitterMetrics: metric => {events.push(metric);}
     }, item => {calls.push(item.$ref.key!);});
     await waitFor(() => firelease.stats.queues[0]?.mode === 'full');
@@ -358,7 +327,9 @@ test('disconnect and blacklist cancel waits without contention feedback', async 
   try {
     const source = new FakeQueueRef('cancel', 'queue');
     let calls = 0;
-    firelease.attachWorker(asNodeFire(source), {leaseJitter: true}, () => {calls++;});
+    firelease.attachWorker(asNodeFire(source), {
+      leaseJitter: true, getAffinity: () => slowAffinity()
+    }, () => {calls++;});
     await waitFor(() => firelease.stats.queues[0]?.mode === 'full');
     const first = source.addTask('blacklisted', {_lease: {affinity: slowAffinity()}});
     firelease.blacklist(first.toString());
@@ -372,7 +343,7 @@ test('disconnect and blacklist cancel waits without contention feedback', async 
   }
 });
 
-test('callback failures cannot break acquisition; affinity stays on the lease', async () => {
+test('metric callback failures cannot break acquisition', async () => {
   TESTABLES.resetBetweenTests();
   try {
     const source = new FakeQueueRef('metric', 'queue');
@@ -386,13 +357,98 @@ test('callback failures cannot break acquisition; affinity stays on the lease', 
         throw new Error('metric');
       }
     }, item => {
-      assert.equal(item._lease.affinity, 'owner|repo|1');
+      assert.equal(item.owner, 'owner');
       calls++;
     });
     await waitFor(() => firelease.stats.queues[0]?.mode === 'full');
-    const task = source.addTask('new', {_lease: {affinity: 'owner|repo|1'}});
+    const task = source.addTask('new', {owner: 'owner'});
     await waitFor(() => calls === 1 && !task.value);
     assert.equal(firelease.stats.leaseTransactions.acquired, 1);
+  } finally {
+    TESTABLES.resetBetweenTests();
+  }
+});
+
+test('snapshot affinity precedes preprocessing and survives replacement leases', async t => {
+  TESTABLES.resetBetweenTests();
+  try {
+    const source = new FakeQueueRef('derived-affinity', 'queue');
+    const ranked: string[] = [];
+    t.mock.method(LeaseJitter.prototype, 'delay', (affinity: string) => {
+      ranked.push(affinity);
+      return 1;
+    });
+    let hookCalls = 0, processed = 0;
+    const attempts = new Map<string, number>();
+    firelease.attachWorker(asNodeFire(source), {
+      leaseJitter: true,
+      getAffinity: item => {
+        hookCalls++;
+        assert(!Object.prototype.hasOwnProperty.call(item._lease ?? {}, 'affinity'));
+        const {owner, repo, prNumber} = JSON.parse(item.payload);
+        return `${owner}|${repo}|${prNumber}`;
+      },
+      preprocess: item => {
+        assert(hookCalls > 0, 'Affinity is available before the leasing transaction');
+        return item;
+      }
+    }, item => {
+      assert(!Object.prototype.hasOwnProperty.call(item._lease, 'affinity'),
+        'No derived metadata is persisted');
+      const attempt = (attempts.get(item.$ref.key!) ?? 0) + 1;
+      attempts.set(item.$ref.key!, attempt);
+      processed++;
+      if (attempt === 1) return {expiry: source.now + 10};
+    });
+    await waitFor(() => firelease.stats.queues[0]?.mode === 'full');
+    for (const key of ['user-a', 'user-b']) {
+      const task = source.addTask(key, {
+        payload: JSON.stringify({owner: 'o', repo: 'r', prNumber: 1})
+      });
+      await waitFor(() => !task.value);
+    }
+    assert.equal(processed, 4);
+    assert.equal(ranked.length, 4);
+    assert(ranked.every(affinity => affinity === 'o|r|1'));
+  } finally {
+    TESTABLES.resetBetweenTests();
+  }
+});
+
+test('missing, nullish, or broken affinity hooks fall back to the task URL', async t => {
+  TESTABLES.resetBetweenTests();
+  try {
+    const ranked: string[] = [], errors: unknown[] = [];
+    t.mock.method(LeaseJitter.prototype, 'delay', (affinity: string) => {
+      ranked.push(affinity);
+      return 0;
+    });
+    firelease.settings.captureError = error => {errors.push(error);};
+    const hooks = [undefined, () => undefined, () => null, () => {throw new Error('hook');},
+      (() => 123) as unknown as () => string];
+    for (const [index, getAffinity] of hooks.entries()) {
+      const source = new FakeQueueRef(`fallback-${index}`, 'queue');
+      firelease.attachWorker(asNodeFire(source), {leaseJitter: true, getAffinity}, () => undefined);
+      await waitFor(() => firelease.stats.queues[index]?.mode === 'full');
+      const task = source.addTask('new', {_lease: {affinity: 'ignored-legacy-value'}});
+      await waitFor(() => !task.value);
+      assert.equal(ranked[ranked.length - 1], task.toString());
+    }
+    assert.equal(errors.length, 4, 'Failing hooks are reported on arrival and lease update');
+  } finally {
+    TESTABLES.resetBetweenTests();
+  }
+});
+
+test('disabled jitter never calls the affinity hook', async () => {
+  TESTABLES.resetBetweenTests();
+  try {
+    const source = new FakeQueueRef('disabled-affinity', 'queue');
+    firelease.attachWorker(asNodeFire(source), {
+      getAffinity: () => {assert.fail('Disabled jitter must not derive affinity');}
+    }, () => undefined);
+    const task = source.addTask('new', {});
+    await waitFor(() => !task.value);
   } finally {
     TESTABLES.resetBetweenTests();
   }

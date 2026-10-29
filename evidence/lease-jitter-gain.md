@@ -3,7 +3,9 @@
 The selected controller uses a maximum gain of 2, a gain budget of
 40/second, and a 5-second
 exponentially decaying opportunity-rate estimate. It has no timer and never ages an idle window.
-All queue options and production telemetry remain unchanged.
+Rate normalization adds no tuning options or production telemetry. The refreshed lifecycle run
+uses the server-side affinity hook and ping bypass; the earlier gain comparisons below did not
+include pings and retain the same controller, scheduler, and affinity hash inputs.
 
 ## Selection and limitations
 
@@ -124,9 +126,20 @@ where the reported minimum gain remains at 2 and both controllers use identical 
 
 ## Live lifecycle regression
 
-[Unmodified report](gain-lifecycle-8.json): 8 workers, 120 tasks per sequential comparison. Transactions/acquisition 7.833 → 1.583; pickup median 71 → 125 ms; p95 76 → 260 ms.
+[Unmodified report](affinity-hook-live-8.json): 8 workers, 120 tasks per sequential comparison. Transactions/acquisition 7.617 → 1.500; pickup median 89 → 127 ms; p95 116 → 308 ms.
 
 The harness also asserted affinity, busy/disconnected fallback, retry/first-acquisition flags, extension, backlog, limited arrivals, and ping behavior.
+
+The refreshed lifecycle run derives affinity through `getAffinity(task)`, not lease metadata. Ping scheduling is bypassed; the observed ping results are:
+
+```json
+{
+  "deleted": 20,
+  "scheduled": 0,
+  "suppressed": 0,
+  "handlerCalls": 0
+}
+```
 
 Limited-query deletion and eviction yielded identical old-value snapshots, while the evicted task still existed. Those ambiguous removals deliberately cancel without training; no per-loser confirmation read was added. Observed fixture values:
 

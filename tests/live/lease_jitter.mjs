@@ -89,10 +89,11 @@ if (typeof values.worker === 'string') {
       firelease.attachWorker(new NodeFire(database.ref(message.path)), {
         leaseJitter: message.enabled, minLease: '2s', maxConcurrent: message.capacity ?? 2,
         bufferSize: message.bufferSize ?? Infinity,
+        getAffinity: item => item.affinity,
         captureLeaseJitterMetrics: metric => {process.send({metric});}
       }, async item => {
         process.send({work: {
-          key: item.$ref.key, affinity: item._lease.affinity, attempt: item._lease.attempts,
+          key: item.$ref.key, affinity: item.affinity, attempt: item._lease.attempts,
           firstAcquisition: item._lease.firstAcquisition === true,
           pickupDelay: Math.max(0, item.$ref.now - (item._lease.created ?? item._lease.initial))
         }});
@@ -184,7 +185,7 @@ if (typeof values.worker === 'string') {
     }
     async function enqueue(ref, key, extra = {}, affinity = key) {
       await ref.child(key).set({
-        ...extra, _lease: {created: ServerValue.TIMESTAMP, affinity, ...extra._lease}
+        affinity, ...extra, _lease: {created: ServerValue.TIMESTAMP, ...extra._lease}
       });
     }
     async function retired(ref, key, expected = 1) {
@@ -400,8 +401,9 @@ if (typeof values.worker === 'string') {
       const pingStats = await Promise.all(clients.map(client => command(client, 'stats')));
       const scheduled = pingStats.reduce((sum, stat) => sum + stat.leaseJitter.scheduled, 0);
       const suppressed = pingStats.reduce((sum, stat) => sum + stat.leaseJitter.suppressed, 0);
-      assert(scheduled >= 20);
-      if (workers > 1) assert(suppressed > 0);
+      assert.equal(scheduled, 0, 'Pings bypass jitter entirely');
+      assert.equal(suppressed, 0, 'Pings never train the controller');
+      assert(pingStats.every(stat => stat.leaseJitter.window === 250));
       assert(pingStats.every(stat => stat.leaseTransactions.acquired === 0));
       report.scenarios.pings = {deleted: 20, scheduled, suppressed, handlerCalls: works.length};
     }

@@ -12,16 +12,25 @@ Affinity jitter
 ---------------
 
 Enable `{leaseJitter: true}` on queues that can tolerate a small pickup delay. Each process hashes
-its startup identity with `_lease.affinity`, or the full task URL when the field is absent.
+its startup identity with the string returned by the optional `getAffinity(task)` queue option,
+or the full task URL when the hook is absent or returns `null`/`undefined`.
 Related tasks with the same affinity tend to run on the same process; different affinities can
 prefer different processes. This is a preference, not ownership, fairness, or serialization. Busy or disconnected
 processes do not prevent others from acquiring tasks. A process restart changes its identity.
 
-For example, producers can set `_lease: {affinity: 'owner|repo|123'}` across queues handling the
-same pull request. Set it when enqueuing, before consumers schedule acquisition; `preprocess` runs
-too late for the first acquisition. Preserve the field when returning a replacement lease object.
-Add this optional string to any database validation rules and encrypt it if it contains private
-identifiers. Every enabled source on a process uses the same identity, but learns its own delay
+For example, use the same hook across queues handling a pull request:
+
+```js
+getAffinity: task => `${task.owner}|${task.repo}|${task.prNumber}`
+```
+
+The hook receives task snapshots before `preprocess` runs and must
+be fast, synchronous, deterministic, and not mutate them. It may be called again on updates;
+pending deadlines remain stable, and new lease generations use the latest affinity. Errors are
+reported through `captureError` and fall back to the task URL. No affinity field is persisted or
+reserved in `_lease`, so older tasks work without a schema change and replacement leases need no
+special handling. Only jitter-enabled, non-ping tasks call the hook.
+Every enabled source on a process uses the same identity, but learns its own delay
 window, so affinity across sources is approximate.
 Different learned windows can favor one idle worker across many affinities; at a zero window the
 hash no longer adds a preference. Local capacity limits still let other workers pick up work.
@@ -75,10 +84,9 @@ latency policy still belongs in the window bounds and race target.
 The [gain experiments](evidence/lease-jitter-gain.md) compare fixed gain with normalized candidates,
 including latency and transaction-cost tradeoffs. They do not establish a universal optimum.
 
-Ping tasks use the same scheduling and controller feedback, including suppression when another
-worker deletes the ping. They still do not enter application handlers or application metric
-callbacks. The existing end-to-end ping latency includes any jitter, so choose the bounds with
-`healthyPingLatency` in mind; health measurements are not adjusted to hide that delay.
+Ping tasks bypass jitter and never train the controller or enter application handlers or
+application metric callbacks. Ping latency measures queue responsiveness without the intentional
+acquisition delay; it is not a measurement of jittered task pickup latency.
 
 Enabled sources expose `leaseJitter: {scheduled, suppressed, window}` in stats. The counts are
 lifetime totals; queue/global rollups sum them and average windows across enabled children. Window
@@ -89,7 +97,7 @@ task keys in metric attributes.
 Suppression counts are confirmed observations, not a complete count of avoided transactions.
 Limited queries report both deletions and query-window evictions using the old child snapshot;
 ambiguous removals cancel pending waits but do not train the controller or increment suppression.
-This includes some deleted pings. Confirming each removal would require extra reads on losing
+Confirming each removal would require extra reads on losing
 instances. Full listeners do not have this ambiguity.
 
 On-demand live testing
@@ -178,6 +186,10 @@ paths concurrently.
     reported through `settings.captureError` and do not affect task processing.
   * `leaseJitter: {boolean | Object}` opt into adaptive affinity jitter. Defaults to `false`.
     `true` uses the defaults; an object customizes `targetRaceRate`, `minWindow`, and `maxWindow`.
+  * `getAffinity: {function(Object): string | null | undefined}` derive affinity from an unprocessed
+    task snapshot, falling back to its full URL for nullish results or errors. The hook must be
+    fast, synchronous, deterministic, and must not mutate the task. It is only called for
+    jitter-enabled application tasks, never pings.
   * `captureLeaseJitterMetrics: {function(Object)}` a synchronous callback receiving either
     `{outcome: 'suppressed'}` when a pending attempt is canceled by an observed lease/deletion,
     or `{outcome: 'acquired', pickupDelay}` after a jittered acquisition. `pickupDelay` is the

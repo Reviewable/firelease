@@ -59,6 +59,10 @@ if (values.lifecycle) {
     'The harness also asserted affinity, busy/disconnected fallback, ' +
     'retry/first-acquisition flags, ' +
     'extension, backlog, limited arrivals, and ping behavior.\n\n' +
+    'The refreshed lifecycle run derives affinity through `getAffinity(task)`, ' +
+    'not lease metadata. ' +
+    'Ping scheduling is bypassed; the observed ping results are:\n\n```json\n' +
+    JSON.stringify(report.scenarios.pings, null, 2) + '\n```\n\n' +
     'Limited-query deletion and eviction yielded identical old-value snapshots, ' +
     'while the evicted task still existed. Those ambiguous removals deliberately cancel ' +
     'without training; no per-loser ' +
@@ -70,7 +74,9 @@ const markdown = `# Bounded rate-normalized leasing gain
 The selected controller uses a maximum gain of ${simulation.defaultGain.maximum}, a gain budget of
 ${simulation.defaultGain.budget}/second, and a ${simulation.defaultGain.smoothingMs / 1000}-second
 exponentially decaying opportunity-rate estimate. It has no timer and never ages an idle window.
-All queue options and production telemetry remain unchanged.
+Rate normalization adds no tuning options or production telemetry. The refreshed lifecycle run
+uses the server-side affinity hook and ping bypass; the earlier gain comparisons below did not
+include pings and retain the same controller, scheduler, and affinity hash inputs.
 
 ## Selection and limitations
 
