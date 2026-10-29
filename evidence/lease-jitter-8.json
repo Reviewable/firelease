@@ -4,13 +4,14 @@
   "scenarios": {
     "baseline": {
       "acquired": 120,
-      "contended": 825,
+      "contended": 829,
       "failed": 0,
-      "tries": 1770,
+      "tries": 1777,
       "suppressed": 0,
-      "amplification": 7.875,
-      "pickupMedianMs": 69,
-      "pickupP95Ms": 86,
+      "amplification": 7.908333333333333,
+      "pickupMedianMs": 70,
+      "pickupP95Ms": 76,
+      "tailPickupMedianMs": 71,
       "windowsMs": [
         0,
         0,
@@ -24,22 +25,23 @@
     },
     "adaptive": {
       "acquired": 120,
-      "contended": 54,
+      "contended": 60,
       "failed": 0,
-      "tries": 228,
-      "suppressed": 687,
-      "amplification": 1.45,
-      "pickupMedianMs": 119,
-      "pickupP95Ms": 261,
+      "tries": 240,
+      "suppressed": 705,
+      "amplification": 1.5,
+      "pickupMedianMs": 130,
+      "pickupP95Ms": 285,
+      "tailPickupMedianMs": 146,
       "windowsMs": [
-        475,
-        333,
-        377,
-        495,
-        1156,
-        1133,
-        222,
-        598
+        625,
+        662,
+        506,
+        835,
+        502,
+        518,
+        463,
+        620
       ]
     },
     "lifecycle": {
@@ -63,23 +65,30 @@
     },
     "limited-arrivals": {
       "acquired": 20,
-      "contended": 22,
+      "contended": 19,
       "failed": 0,
-      "tries": 64,
-      "suppressed": 94,
-      "amplification": 2.1,
-      "pickupMedianMs": 108,
-      "pickupP95Ms": 189,
+      "tries": 58,
+      "suppressed": 103,
+      "amplification": 1.95,
+      "pickupMedianMs": 107,
+      "pickupP95Ms": 1034,
+      "tailPickupMedianMs": 107,
       "windowsMs": [
-        796,
-        679,
-        507,
-        620,
-        634,
-        793,
-        469,
-        320
+        430,
+        606,
+        457,
+        463,
+        780,
+        711,
+        432,
+        293
       ]
+    },
+    "pings": {
+      "deleted": 20,
+      "scheduled": 160,
+      "suppressed": 135,
+      "handlerCalls": 0
     }
   },
   "passed": true,

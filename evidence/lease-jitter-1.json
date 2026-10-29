@@ -1,0 +1,75 @@
+{
+  "workers": 1,
+  "tasksPerMode": 120,
+  "scenarios": {
+    "baseline": {
+      "acquired": 120,
+      "contended": 0,
+      "failed": 0,
+      "tries": 120,
+      "suppressed": 0,
+      "amplification": 1,
+      "pickupMedianMs": 71,
+      "pickupP95Ms": 76,
+      "tailPickupMedianMs": 71,
+      "windowsMs": [
+        0
+      ]
+    },
+    "adaptive": {
+      "acquired": 120,
+      "contended": 0,
+      "failed": 0,
+      "tries": 120,
+      "suppressed": 0,
+      "amplification": 1,
+      "pickupMedianMs": 73,
+      "pickupP95Ms": 199,
+      "tailPickupMedianMs": 73,
+      "windowsMs": [
+        0
+      ]
+    },
+    "lifecycle": {
+      "affinityWins": 20,
+      "affinityTasks": 20,
+      "busyFallback": null,
+      "disconnectFallback": null,
+      "retryAttempts": [
+        1,
+        2
+      ],
+      "extensionAcquisitions": 1
+    },
+    "backlog": {
+      "acquired": 12,
+      "jitterScheduled": 0
+    },
+    "limited-backlog": {
+      "acquired": 12,
+      "jitterScheduled": 0
+    },
+    "limited-arrivals": {
+      "acquired": 20,
+      "contended": 0,
+      "failed": 0,
+      "tries": 20,
+      "suppressed": 0,
+      "amplification": 1,
+      "pickupMedianMs": 186,
+      "pickupP95Ms": 271,
+      "tailPickupMedianMs": 186,
+      "windowsMs": [
+        82
+      ]
+    },
+    "pings": {
+      "deleted": 20,
+      "scheduled": 20,
+      "suppressed": 0,
+      "handlerCalls": 0
+    }
+  },
+  "passed": true,
+  "cleanedUp": true
+}

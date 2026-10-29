@@ -12,17 +12,19 @@ Affinity jitter
 ---------------
 
 Enable `{leaseJitter: true}` on queues that can tolerate a small pickup delay. Each process hashes
-its startup identity with `_lease.affinityKey`, or the full task URL when the field is absent.
-Related tasks with the same affinity tend to run on the same process; different affinities spread
-across processes. This is a preference, not ownership or serialization. Busy or disconnected
+its startup identity with `_lease.affinity`, or the full task URL when the field is absent.
+Related tasks with the same affinity tend to run on the same process; different affinities can
+prefer different processes. This is a preference, not ownership, fairness, or serialization. Busy or disconnected
 processes do not prevent others from acquiring tasks. A process restart changes its identity.
 
-For example, producers can set `_lease: {affinityKey: 'owner|repo|123'}` across queues handling the
+For example, producers can set `_lease: {affinity: 'owner|repo|123'}` across queues handling the
 same pull request. Set it when enqueuing, before consumers schedule acquisition; `preprocess` runs
 too late for the first acquisition. Preserve the field when returning a replacement lease object.
 Add this optional string to any database validation rules and encrypt it if it contains private
 identifiers. Every enabled source on a process uses the same identity, but learns its own delay
 window, so affinity across sources is approximate.
+Different learned windows can favor one idle worker across many affinities; at a zero window the
+hash no longer adds a preference. Local capacity limits still let other workers pick up work.
 
 Jitter applies to live arrivals and lease expiries. Initial backlog, overdue tasks, retries after
 transaction failures, and work held up by local concurrency limits run without additional jitter.
@@ -31,12 +33,34 @@ does not reserve a worker slot. An observed competing lease/deletion cancels a p
 Firebase transactions still provide the correctness guarantee when races remain. Disconnection,
 blacklisting, and listener replacement cancel waits without treating them as contention feedback.
 
-The window starts at 250 ms and stays between 25 ms and 5 s. Contended jittered attempts increase
-it; suppressed attempts decrease it, targeting a 5% race rate among those two outcomes. Successful
-acquisitions and observed lease broadcasts estimate propagation time. Failures do not train the
-controller. A window is the maximum possible delay, not the expected winning delay; with many idle
-workers the earliest hashed deadline is typically much smaller. This trades pickup latency for
+The window starts at 250 ms and stays between 0 and 5 s. Contended jittered attempts increase it;
+successful and suppressed attempts decrease it, targeting a 5% race rate among all three outcomes.
+A lone worker therefore converges to zero delay; a subsequent collision raises the window again.
+Successful acquisitions and observed lease broadcasts estimate propagation time. Failures do not
+train the controller. A window is the maximum possible delay, not the expected winning delay; with
+many idle workers the earliest hashed deadline is typically much smaller. This trades pickup latency for
 fewer transactions and is most useful on lightly loaded queues with many idle consumers.
+
+Pass an object to customize the controller, e.g.
+`{leaseJitter: {targetRaceRate: 0.01, minWindow: 0, maxWindow: 2000}}`.
+Bounds are finite, nonnegative numbers of milliseconds with `minWindow <= maxWindow`; the target
+must be strictly between zero and one. Missing fields use the defaults above. The initial 250 ms
+window is clamped to the requested bounds, not scaled with them. A lower target reduces the decay
+per uncontended opportunity and slightly increases growth per race: it usually trades a larger
+window for fewer collisions, but the cap and changing workloads can prevent reaching the target.
+Setting both bounds to zero retains observation/feedback but never delays acquisition.
+
+The update is `window += 2 * propagation * (raced - targetRaceRate)`, clamped to the bounds.
+`raced` is one for a contended attempt, zero for a win or suppression. `propagation` is a 0.1-alpha
+EMA in milliseconds, initially 100 ms, estimated from successful transaction time per try or the
+delay in observing a competing lease. The dimensionless gain 2 makes a default race add roughly
+two propagation times, while clean opportunities remove a small fraction. With a 100 ms estimate,
+a race adds 190 ms and a clean opportunity removes 10 ms; the expected update is zero at 5% races.
+
+Ping tasks use the same scheduling and controller feedback, including suppression when another
+worker deletes the ping. They still do not enter application handlers or application metric
+callbacks. The existing end-to-end ping latency includes any jitter, so choose the bounds with
+`healthyPingLatency` in mind; health measurements are not adjusted to hide that delay.
 
 Enabled sources expose `leaseJitter: {scheduled, suppressed, window}` in stats. The counts are
 lifetime totals; queue/global rollups sum them and average windows across enabled children. Window
@@ -59,7 +83,7 @@ GOOGLE_APPLICATION_CREDENTIALS=/path/to/test-service-account.json \
 
 The harness launches independent Node processes using the installed NodeFire/Admin SDK, compares
 baseline and adaptive contention, and checks recurring affinity, busy/disconnected fallback,
-retries, extension, and backlog replay with full and limited listeners. It checks first-acquisition
+retries, extension, pings, and backlog replay with full and limited listeners. It checks first-acquisition
 flags and duplicate processing, saves actual counts and pickup percentiles, and removes only its
 UUID-scoped `/firelease-tests` subtree. It never changes security rules. Admin credentials work
 with `.read` and `.write` both `false`. An optional `_lease/expiry` index on test queue paths avoids
@@ -73,7 +97,8 @@ ordinary CI. Abrupt termination can leave a UUID subtree for manual cleanup.
 API
 ---
 
-All durations can be specified as either a human-readable string, or a number of milliseconds.
+Lease and ping durations can be human-readable strings or numbers of milliseconds. Jitter window
+bounds are numeric milliseconds.
 
 The module exposes these functions:
 
@@ -118,7 +143,8 @@ paths concurrently.
     outcome, NodeFire transaction tries, and transaction duration in milliseconds.  Missing optional
     NodeFire metadata is reported as zero.  The callback must be synchronous.  Callback errors are
     reported through `settings.captureError` and do not affect task processing.
-  * `leaseJitter: {boolean}` opt into adaptive affinity jitter. Defaults to `false`.
+  * `leaseJitter: {boolean | Object}` opt into adaptive affinity jitter. Defaults to `false`.
+    `true` uses the defaults; an object customizes `targetRaceRate`, `minWindow`, and `maxWindow`.
   * `captureLeaseJitterMetrics: {function(Object)}` a synchronous callback receiving either
     `{outcome: 'suppressed'}` when a pending attempt is canceled by an observed lease/deletion,
     or `{outcome: 'acquired', pickupDelay}` after a jittered acquisition. `pickupDelay` is the

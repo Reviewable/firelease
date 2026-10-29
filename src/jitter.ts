@@ -1,10 +1,18 @@
-import {createHash, randomUUID} from 'node:crypto';
+import {hash, randomUUID} from 'node:crypto';
 import type {LeaseJitterStats} from './stats';
 
 const INSTANCE_ID = randomUUID();
-const MIN_WINDOW = 25;
-const MAX_WINDOW = 5000;
-const TARGET_RACE_RATE = 0.05;
+// Freshness/measurement limits are independent of the caller's chosen delay cap.
+const FRESHNESS_LIMIT = 5000;
+const CONTROLLER_GAIN = 2;
+
+export interface LeaseJitterOptions {
+  /** Fraction of jittered opportunities allowed to race; must be strictly between 0 and 1. */
+  targetRaceRate?: number;
+  /** Minimum and maximum delay windows in milliseconds. Zero disables delay at the floor. */
+  minWindow?: number;
+  maxWindow?: number;
+}
 
 export type LeaseJitterMetric =
   {outcome: 'suppressed'} | {outcome: 'acquired', pickupDelay: number};
@@ -13,41 +21,78 @@ export type CaptureLeaseJitterMetrics = (metric: LeaseJitterMetric) => undefined
 /** One controller per physical source; one stable hash seed across this process. */
 export class LeaseJitter {
   readonly stats: LeaseJitterStats = {scheduled: 0, suppressed: 0, window: 250};
+  readonly options: Required<LeaseJitterOptions>;
+  // EMA of notification delay or successful transaction time per try, in milliseconds.
   private propagation = 100;
 
-  constructor(private readonly instanceId: string = INSTANCE_ID) {}
-
-  delay(affinity: string) {
-    // 48 bits fit exactly in a JS number. Length framing avoids ambiguous key combinations.
-    const hash = createHash('sha256').update(JSON.stringify([this.instanceId, affinity])).digest();
-    return hash.readUIntBE(0, 6) / 2 ** 48 * this.stats.window;
+  constructor(
+    options: LeaseJitterOptions = {}, private readonly instanceId: string = INSTANCE_ID
+  ) {
+    this.options = {
+      targetRaceRate: options.targetRaceRate ?? 0.05,
+      minWindow: options.minWindow ?? 0,
+      maxWindow: options.maxWindow ?? 5000
+    };
+    const {targetRaceRate, minWindow, maxWindow} = this.options;
+    if (!Number.isFinite(targetRaceRate) || targetRaceRate <= 0 || targetRaceRate >= 1 ||
+        !Number.isFinite(minWindow) || minWindow < 0 ||
+        !Number.isFinite(maxWindow) || maxWindow < minWindow) {
+      throw new Error('Invalid leaseJitter targetRaceRate or window bounds');
+    }
+    // Keep the tested startup default, clamped to the requested interval, rather than making
+    // a larger maximum (which is only a safety cap) inflate every initial delay.
+    this.stats.window = Math.max(minWindow, Math.min(maxWindow, this.stats.window));
   }
 
+  /** Stable rank for this process/affinity pair, scaled to the current window. */
+  delay(affinity: string) {
+    // One-shot SHA-256 keeps uniform, uncorrelated ranks without a custom hash or dependency.
+    // 48 bits fit exactly in a JS number; framing avoids ambiguous key combinations.
+    const digest = hash('sha256', JSON.stringify([this.instanceId, affinity]), 'buffer');
+    return digest.readUIntBE(0, 6) / 2 ** 48 * this.stats.window;
+  }
+
+  /** Smooth valid propagation observations (alpha=.1); reject clock/timeout outliers. */
   observePropagation(duration: number) {
-    if (!Number.isFinite(duration) || duration < 0 || duration > MAX_WINDOW) return;
+    if (!Number.isFinite(duration) || duration < 0 || duration > FRESHNESS_LIMIT) return;
     this.propagation = 0.9 * this.propagation + 0.1 * Math.max(1, duration);
   }
 
-  record(outcome: 'contended' | 'suppressed') {
+  /** Train once per jittered opportunity; failures and bypassed backlog do not train. */
+  record(outcome: 'acquired' | 'contended' | 'suppressed') {
     if (outcome === 'suppressed') this.stats.suppressed++;
-    this.stats.window = Math.max(MIN_WINDOW, Math.min(MAX_WINDOW,
-      this.stats.window + 2 * this.propagation *
-        ((outcome === 'contended' ? 1 : 0) - TARGET_RACE_RATE)));
+    const {minWindow, maxWindow, targetRaceRate} = this.options;
+    // Integral feedback: E[delta] = gain * propagation * (observed race rate - target).
+    // At the defaults and 100ms propagation, a race adds 190ms; a win/suppression removes 10ms.
+    // Gain 2 is a dimensionless responsiveness choice: correct by about two propagation times
+    // per race, then decay cautiously. Counting wins also lets a lone worker reach zero delay.
+    this.stats.window = Math.max(minWindow, Math.min(maxWindow,
+      this.stats.window + CONTROLLER_GAIN * this.propagation *
+        ((outcome === 'contended' ? 1 : 0) - targetRaceRate)));
   }
 }
 
-/** Local eligibility state, independent of the lease reservation and worker concurrency. */
+/**
+ * Per-task state: replay/bypass -> disabled; fresh eligibility -> armed -> pending deadline.
+ * A start consumes the pending opportunity. A competing lease/removal suppresses it instead.
+ * An expiry change re-arms the next generation; payload-only updates never move its deadline.
+ * Timers and worker slots live on Task, not here.
+ */
 export class LeaseJitterSchedule {
+  // Last observed lease generation, including the initial snapshot (whose expiry may be absent).
   private initialized = false;
   private expiry?: number;
   private attempts?: number;
+  // Current affinity and eligibility timestamp; a pending deadline captures them only once.
   private affinity = '';
   private eligibleAt = 0;
+  // Armed unless backlog, quota waiting, recovery, or a start/suppression bypassed it.
   private enabled = false;
   private pending?: {eligibleAt: number, deadline: number};
 
   constructor(readonly controller: LeaseJitter) {}
 
+  /** Observe a snapshot; return whether it canceled a pending competing attempt. */
   update(
     lease: {expiry?: number, time?: number, attempts?: number, busy?: boolean} | undefined,
     affinity: string, now: number, live: boolean, working: boolean
@@ -66,14 +111,15 @@ export class LeaseJitterSchedule {
     this.pending = undefined;
     this.eligibleAt = lease?.expiry ?? now;
     // Initial/replayed backlog runs immediately. A future expiry is a fresh race even on replay.
-    this.enabled = this.eligibleAt > now || live && now - this.eligibleAt <= MAX_WINDOW;
+    this.enabled = this.eligibleAt > now || live && now - this.eligibleAt <= FRESHNESS_LIMIT;
     return suppressed;
   }
 
+  /** Arm a deadline on eligibility, or bypass jitter if local capacity already staggered us. */
   deadline(now: number, hasQuota: boolean) {
     if (!this.enabled) return now;
     if (now < this.eligibleAt) return this.eligibleAt;
-    if (!hasQuota || now - this.eligibleAt > MAX_WINDOW) this.skip();
+    if (!hasQuota || now - this.eligibleAt > FRESHNESS_LIMIT && !this.pending) this.skip();
     if (!this.enabled) return now;
     if (!this.pending) {
       this.pending = {
@@ -85,17 +131,20 @@ export class LeaseJitterSchedule {
     return this.pending.deadline;
   }
 
+  /** Consume the deadline and return its origin for feedback and pickup measurement. */
   start() {
     const eligibleAt = this.pending?.eligibleAt;
     this.skip();
     return eligibleAt;
   }
 
+  /** Disable this generation without recording a contention observation. */
   skip() {
     this.enabled = false;
     this.pending = undefined;
   }
 
+  /** Record a competing lease/removal once, and only after this task became eligible. */
   suppress(now: number) {
     if (!this.pending || now < this.pending.eligibleAt) return false;
     this.skip();
