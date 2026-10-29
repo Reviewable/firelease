@@ -87,7 +87,7 @@ export type CaptureLeaseTransactionMetrics = (
 
 export interface QueueOptions {
   leaseJitter?: boolean | LeaseJitterOptions;
-  getAffinity?: (item: LeaseItem) => string | null | undefined;
+  getAffinity?: (item: LeaseItem & Pick<WorkerItem, '$ref'>) => string | null | undefined;
   maxConcurrent?: number;
   bufferSize?: number;
   minLease?: Duration;
@@ -279,8 +279,8 @@ class Task {
   updateFrom(snap: LeaseSnapshot) {
     const value = snap.val() as LeaseItem | null;
     if (this.jitter?.update(
-      value?._lease, value ? this.queue.getAffinity(value, this.key) : this.key, this.ref.now,
-      this.source.activeListener?.loaded ?? false, this.working
+      value?._lease, value ? this.queue.getAffinity(value, this.key, this.ref) : this.key,
+      this.ref.now, this.source.activeListener?.loaded ?? false, this.working
     )) this.source.captureJitterMetric({outcome: 'suppressed'});
     this.expiry = value?._lease?.expiry ?? this.ref.now;
     // console.log('update', this.key, 'expiry', this.expiry);
@@ -1192,9 +1192,11 @@ class Queue {
     return item;
   }
 
-  getAffinity(item: LeaseItem, taskKey: string) {
+  getAffinity(item: LeaseItem, taskKey: string, ref: NodeFire) {
+    if (!this.options.getAffinity) return taskKey;
     try {
-      const affinity = this.options.getAffinity?.(item);
+      Object.defineProperty(item, '$ref', {value: ref});
+      const affinity = this.options.getAffinity(item as LeaseItem & Pick<WorkerItem, '$ref'>);
       if (_.isNil(affinity)) return taskKey;
       if (!_.isString(affinity)) {
         throw new Error('getAffinity must return a string or nullish value');
@@ -1266,9 +1268,10 @@ export function getCurrentTask(): WorkerItem | undefined {
  *          targetRaceRate, minWindow, and maxWindow (milliseconds or human-readable durations).
  *          Defaults to false. Delays never consume concurrency or replace Firebase transactions.
  *        getAffinity: {function(Object):string | null | undefined} derives cache affinity from a
- *          task snapshot before preprocessing. Must be fast, synchronous, deterministic, and not
- *          mutate the task. Nullish results or errors fall back to the full task URL. Only called
- *          when jitter is enabled, never for pings. Pending deadlines are not moved by updates.
+ *          task snapshot before preprocessing, decorated with a non-enumerable, read-only $ref.
+ *          Must be fast, synchronous, deterministic, and not mutate the task. Nullish results or
+ *          errors fall back to the full task URL. Only called when jitter is enabled, never for
+ *          pings. Pending deadlines are not moved by updates.
  *        captureLeaseJitterMetrics: {function(Object)} synchronous callback for suppressed
  *          attempts or jittered acquisitions (including pickupDelay in milliseconds).
  *        captureLeaseTransactionMetrics: {function(string, number, number)} a callback invoked

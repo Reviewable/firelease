@@ -7,6 +7,11 @@ A Firebase queue consumer for Node with at-least-once and at-most-once semantics
 
 Install NodeFire 7.2.0 or later in the 7.x series alongside Firelease. It is a peer dependency so
 the application and Firelease share one NodeFire instance and its operation interceptors.
+Since Firelease 4.5.0, applications must declare `nodefire: "^7.2.0"` (or a compatible 7.x version)
+explicitly instead of relying on Firelease to install it. Package managers that do not install
+peers automatically otherwise leave NodeFire missing, causing Firelease to fail at startup.
+This shared instance enables the per-database write statistics and optional
+`settings.captureWriteMetrics` callback documented below.
 
 Affinity jitter
 ---------------
@@ -24,10 +29,14 @@ For example, use the same hook across queues handling a pull request:
 getAffinity: task => `${task.owner}|${task.repo}|${task.prNumber}`
 ```
 
-The hook receives task snapshots before `preprocess` runs and must
-be fast, synchronous, deterministic, and not mutate them. It may be called again on updates;
-pending deadlines remain stable, and new lease generations use the latest affinity. Errors are
-reported through `captureError` and fall back to the task URL. No affinity field is persisted or
+The hook receives task snapshots before `preprocess` runs, with the same non-enumerable, read-only
+`$ref` property as worker items. Use `task.$ref.key` for the child key or `task.$ref.toString()` for
+the URL; keys retain NodeFire escaping. Hooks using `$ref` require Firelease 4.6.1 or later (declare
+`firelease: "^4.6.1"`, not `"^4.6.0"`). Unlike worker items, these snapshots need not have a lease
+and do not expose `$leaseTimeRemaining` or acquired-lease guarantees.
+The hook must be fast, synchronous, deterministic, and not mutate the task. It may be called again
+on updates; pending deadlines remain stable, and new lease generations use the latest affinity.
+Errors are reported through `captureError` and fall back to the task URL. No affinity field is persisted or
 reserved in `_lease`, so older tasks work without a schema change and replacement leases need no
 special handling. Only jitter-enabled, non-ping tasks call the hook.
 Every enabled source on a process uses the same identity, but learns its own delay
@@ -187,7 +196,10 @@ paths concurrently.
   * `leaseJitter: {boolean | Object}` opt into adaptive affinity jitter. Defaults to `false`.
     `true` uses the defaults; an object customizes `targetRaceRate`, `minWindow`, and `maxWindow`.
   * `getAffinity: {function(Object): string | null | undefined}` derive affinity from an unprocessed
-    task snapshot, falling back to its full URL for nullish results or errors. The hook must be
+    task snapshot decorated with a non-enumerable, read-only `$ref` (since 4.6.1).
+    Its `$ref.key` retains NodeFire escaping; use `NodeFire.unescape` on key components if needed.
+    The lease is optional here; only worker items have acquired-lease guarantees.
+    Nullish results or errors fall back to the full task URL. The hook must be
     fast, synchronous, deterministic, and must not mutate the task. It is only called for
     jitter-enabled application tasks, never pings.
   * `captureLeaseJitterMetrics: {function(Object)}` a synchronous callback receiving either

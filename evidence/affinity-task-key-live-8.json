@@ -1,0 +1,128 @@
+{
+  "workers": 8,
+  "tasksPerMode": 40,
+  "gain": {
+    "maximum": 2,
+    "budget": 40,
+    "smoothingMs": 5000
+  },
+  "scenarios": {
+    "baseline": {
+      "acquired": 40,
+      "contended": 277,
+      "failed": 0,
+      "tries": 594,
+      "suppressed": 0,
+      "gainUpdates": 0,
+      "reducedGainUpdates": 0,
+      "minimumGain": 2,
+      "amplification": 7.925,
+      "pickupMedianMs": 74,
+      "pickupP95Ms": 83,
+      "pickupP99Ms": 570,
+      "tailPickupMedianMs": 73,
+      "windowsMs": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "adaptive": {
+      "acquired": 40,
+      "contended": 31,
+      "failed": 0,
+      "tries": 102,
+      "suppressed": 216,
+      "gainUpdates": 287,
+      "reducedGainUpdates": 0,
+      "minimumGain": 2,
+      "amplification": 1.775,
+      "pickupMedianMs": 136,
+      "pickupP95Ms": 216,
+      "pickupP99Ms": 238,
+      "tailPickupMedianMs": 154,
+      "windowsMs": [
+        1081,
+        624,
+        587,
+        453,
+        471,
+        351,
+        612,
+        643
+      ]
+    },
+    "lifecycle": {
+      "affinityWins": 20,
+      "affinityTasks": 20,
+      "busyFallback": true,
+      "disconnectFallback": true,
+      "retryAttempts": [
+        1,
+        2
+      ],
+      "extensionAcquisitions": 1
+    },
+    "backlog": {
+      "acquired": 12,
+      "jitterScheduled": 0
+    },
+    "limited-backlog": {
+      "acquired": 12,
+      "jitterScheduled": 0
+    },
+    "limited-arrivals": {
+      "acquired": 20,
+      "contended": 19,
+      "failed": 0,
+      "tries": 58,
+      "suppressed": 97,
+      "gainUpdates": 136,
+      "reducedGainUpdates": 0,
+      "minimumGain": 2,
+      "amplification": 1.95,
+      "pickupMedianMs": 104,
+      "pickupP95Ms": 172,
+      "pickupP99Ms": 172,
+      "tailPickupMedianMs": 104,
+      "windowsMs": [
+        484,
+        616,
+        459,
+        298,
+        612,
+        474,
+        471,
+        777
+      ]
+    },
+    "pings": {
+      "deleted": 20,
+      "scheduled": 0,
+      "suppressed": 0,
+      "handlerCalls": 0
+    }
+  },
+  "limitedRemovalSnapshots": {
+    "deletion": {
+      "_lease": {
+        "expiry": 100
+      },
+      "payload": "same-old-value"
+    },
+    "eviction": {
+      "_lease": {
+        "expiry": 100
+      },
+      "payload": "same-old-value"
+    },
+    "evictedTaskStillExists": true
+  },
+  "passed": true,
+  "cleanedUp": true
+}

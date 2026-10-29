@@ -89,7 +89,14 @@ if (typeof values.worker === 'string') {
       firelease.attachWorker(new NodeFire(database.ref(message.path)), {
         leaseJitter: message.enabled, minLease: '2s', maxConcurrent: message.capacity ?? 2,
         bufferSize: message.bufferSize ?? Infinity,
-        getAffinity: item => item.affinity,
+        getAffinity: item => {
+          const key = item.$ref.key;
+          assert.equal(typeof key, 'string');
+          assert(!key.includes('/'), 'The hook receives a child key, not a URL');
+          assert.equal(Object.getOwnPropertyDescriptor(item, '$ref').enumerable, false);
+          assert.equal(Object.getOwnPropertyDescriptor(item, '$ref').writable, false);
+          return item.affinity ?? key;
+        },
         captureLeaseJitterMetrics: metric => {process.send({metric});}
       }, async item => {
         process.send({work: {
