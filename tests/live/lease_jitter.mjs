@@ -19,10 +19,11 @@ const {initializeApp, applicationDefault, deleteApp} = nodefireRequire('firebase
 const {getDatabase, ServerValue} = nodefireRequire('firebase-admin/database');
 const NodeFire = require('nodefire').default;
 const {default: firelease, TESTABLES} = require('../../src/index.ts');
+const {LeaseJitterGain} = require('../../src/jitter.ts');
 const {values} = parseArgs({options: {
   live: {type: 'boolean'}, worker: {type: 'string'}, database: {type: 'string'},
   workers: {type: 'string', default: '8'}, tasks: {type: 'string', default: '120'},
-  output: {type: 'string'}
+  output: {type: 'string'}, 'compare-gain': {type: 'boolean'}, reverse: {type: 'boolean'}
 }});
 const databaseURL = values.database ?? process.env.FIRELEASE_TEST_DATABASE_URL;
 if (!values.live || !databaseURL || !process.env.GOOGLE_APPLICATION_CREDENTIALS) {
@@ -57,6 +58,16 @@ async function waitFor(predicate, description, timeout = 15_000) {
 
 if (typeof values.worker === 'string') {
   let stopped = false;
+  let fixedGain = false;
+  let gainUpdates = 0, reducedGainUpdates = 0, minimumGain = 2;
+  const nextGain = LeaseJitterGain.prototype.next;
+  LeaseJitterGain.prototype.next = function(now) {
+    const gain = fixedGain ? 2 : nextGain.call(this, now);
+    gainUpdates++;
+    if (gain < 2) reducedGainUpdates++;
+    minimumGain = Math.min(minimumGain, gain);
+    return gain;
+  };
   process.on('disconnect', () => {
     if (stopped) process.exit(0);
     void deleteApp(app).finally(() => {process.exit(0);});
@@ -69,11 +80,14 @@ if (typeof values.worker === 'string') {
   async function handleCommand(message) {
     if (message.command === 'configure') {
       TESTABLES.resetBetweenTests();
+      fixedGain = message.fixedGain === true;
+      gainUpdates = reducedGainUpdates = 0;
+      minimumGain = 2;
       firelease.settings.captureError = error => {
         process.send({error: error.message, phase: error.firelease?.phase});
       };
       firelease.attachWorker(new NodeFire(database.ref(message.path)), {
-        leaseJitter: message.enabled, minLease: '2s', maxConcurrent: 2,
+        leaseJitter: message.enabled, minLease: '2s', maxConcurrent: message.capacity ?? 2,
         bufferSize: message.bufferSize ?? Infinity,
         captureLeaseJitterMetrics: metric => {process.send({metric});}
       }, async item => {
@@ -105,7 +119,10 @@ if (typeof values.worker === 'string') {
       process.disconnect();
       return;
     }
-    process.send({id: message.id, stats: JSON.parse(JSON.stringify(firelease.stats))});
+    process.send({id: message.id, stats: {
+      ...JSON.parse(JSON.stringify(firelease.stats)),
+      experiment: {gainUpdates, reducedGainUpdates, minimumGain}
+    }});
   }
 } else {
   const run = randomUUID();
@@ -115,7 +132,10 @@ if (typeof values.worker === 'string') {
   const errors = [];
   const pickups = [];
   let serial = 0;
-  const report = {workers, tasksPerMode: taskCount, scenarios: {}};
+  const gain = new LeaseJitterGain();
+  const report = {workers, tasksPerMode: taskCount,
+    gain: {maximum: gain.maximum, budget: gain.budget, smoothingMs: gain.smoothingMs},
+    scenarios: {}};
   try {
     for (let i = 0; i < workers; i++) {
       const workerProcess = fork(fileURLToPath(import.meta.url), [
@@ -155,10 +175,10 @@ if (typeof values.worker === 'string') {
         client.process.send({id, command: kind, ...params});
       });
     }
-    async function configure(name, enabled, bufferSize) {
+    async function configure(name, enabled, bufferSize, extra = {}) {
       works.length = pickups.length = 0;
       await Promise.all(clients.map(client => command(client, 'configure', {
-        path: `firelease-tests/${root.key}/${name}`, enabled, bufferSize
+        path: `firelease-tests/${root.key}/${name}`, enabled, bufferSize, ...extra
       })));
       return root.child(name);
     }
@@ -193,7 +213,7 @@ if (typeof values.worker === 'string') {
       const index = Math.min(samples.length - 1, Math.floor(samples.length * q));
       return [...samples].sort((a, b) => a - b)[index] ?? 0;
     }
-    async function summarize() {
+    async function summarize(from = 0, previous) {
       const stats = await Promise.all(clients.map(client => command(client, 'stats')));
       const totals = {acquired: 0, contended: 0, failed: 0, tries: 0, suppressed: 0};
       for (const stat of stats) {
@@ -202,132 +222,209 @@ if (typeof values.worker === 'string') {
         }
         totals.suppressed += stat.leaseJitter?.suppressed ?? 0;
       }
+      if (previous) for (const key of Object.keys(totals)) totals[key] -= previous[key];
+      const samples = works.slice(from).map(work => work.pickupDelay);
       return {
         ...totals,
+        gainUpdates: stats.reduce((n, stat) => n + stat.experiment.gainUpdates, 0),
+        reducedGainUpdates: stats.reduce((n, stat) => n + stat.experiment.reducedGainUpdates, 0),
+        minimumGain: Math.min(...stats.map(stat => stat.experiment.minimumGain)),
         amplification: (totals.acquired + totals.contended + totals.failed) / totals.acquired,
-        pickupMedianMs: quantile(works.map(work => work.pickupDelay), 0.5),
-        pickupP95Ms: quantile(works.map(work => work.pickupDelay), 0.95),
+        pickupMedianMs: quantile(samples, 0.5),
+        pickupP95Ms: quantile(samples, 0.95),
+        pickupP99Ms: quantile(samples, 0.99),
         tailPickupMedianMs: quantile(works.slice(-20).map(work => work.pickupDelay), 0.5),
         windowsMs: stats.map(stat => Math.round(stat.leaseJitter?.window ?? 0))
       };
     }
-    for (const enabled of [false, true]) {
-      const name = enabled ? 'adaptive' : 'baseline';
-      const ref = await configure(name, enabled);
-      for (let i = 0; i < taskCount; i++) {
-        const key = `task-${i}`;
-        await enqueue(ref, key, {}, `owner|repo|${i % 16}`);
-        await retired(ref, key);
-      }
-      assert.equal(works.length, taskCount, `${name}: each task acquired once`);
-      assert(works.every(work => work.firstAcquisition && work.attempt === 1));
-      report.scenarios[name] = await summarize();
-      console.log(JSON.stringify({scenario: name, ...report.scenarios[name]}));
-    }
-    if (workers > 1) {
-      assert(report.scenarios.adaptive.amplification < report.scenarios.baseline.amplification,
-        'Adaptive jitter must reduce transactions per acquisition');
-      assert(report.scenarios.adaptive.suppressed > 0);
-    } else {
-      assert.equal(report.scenarios.adaptive.amplification, 1);
-      assert.deepEqual(report.scenarios.adaptive.windowsMs, [0], 'A lone worker stops delaying');
-    }
-    assert.equal(report.scenarios.adaptive.failed, 0);
-
-    const ref = await configure('lifecycle', true);
-    // A recurring PR affinity uses distinct task keys, so affinity cannot come from key reuse.
-    for (let i = 0; i < 20; i++) {
-      await enqueue(ref, `affinity-${i}`, {}, 'owner|cached-repo|123');
-      await retired(ref, `affinity-${i}`);
-    }
-    const affinityCounts = new Map();
-    for (const work of works) {
-      affinityCounts.set(work.worker, (affinityCounts.get(work.worker) ?? 0) + 1);
-    }
-    const [preferred, wins] = [...affinityCounts].sort((a, b) => b[1] - a[1])[0];
-    assert(wins >= 12, 'At least 60% of recurring affinity should reach the same worker');
-    if (workers > 1) {
-      await command(clients[preferred], 'quota', {value: 0});
-      await enqueue(ref, 'busy-fallback', {}, 'owner|cached-repo|123');
-      await retired(ref, 'busy-fallback');
-      assert.notEqual(works.find(work => work.key === 'busy-fallback').worker, preferred);
-      await command(clients[preferred], 'quota', {value: 200});
-    }
-
-    await enqueue(ref, 'retry', {retry: true});
-    await retired(ref, 'retry', 2);
-    const retries = works.filter(work => work.key === 'retry');
-    assert.deepEqual(retries.map(work => work.attempt), [1, 2]);
-    assert.deepEqual(retries.map(work => work.firstAcquisition), [true, false]);
-    // Keep working past the original two-second lease, but within the extension.
-    await enqueue(ref, 'extended', {extend: true, hold: 2300});
-    await retired(ref, 'extended');
-    assert.equal(works.filter(work => work.key === 'extended').length, 1);
-    if (workers > 1) {
-      await command(clients[preferred], 'offline');
-      await enqueue(ref, 'offline-fallback', {}, 'owner|cached-repo|123');
-      await retired(ref, 'offline-fallback');
-      assert.notEqual(works.find(work => work.key === 'offline-fallback').worker, preferred);
-      await command(clients[preferred], 'online');
-    }
-    report.scenarios.lifecycle = {
-      affinityWins: wins, affinityTasks: 20,
-      busyFallback: workers > 1 ? true : null, disconnectFallback: workers > 1 ? true : null,
-      retryAttempts: retries.map(work => work.attempt), extensionAcquisitions: 1
-    };
-    // Replay must process already eligible backlog with no jitter, including on limited listeners.
-    for (const bufferSize of [undefined, 3]) {
-      const name = bufferSize ? 'limited-backlog' : 'backlog';
-      await root.child(name).set(Object.fromEntries(Array.from({length: 12}, (_, i) => [
-        `old-${i}`,
-        {payload: i, _lease: {created: Date.now() - 60_000, expiry: Date.now() - 60_000}}
-      ])));
-      const backlog = await configure(name, true, bufferSize);
-      await waitFor(() => works.length >= 12, name);
-      for (let i = 0; i < 12; i++) await retired(backlog, `old-${i}`);
-      assert.equal(works.length, 12, `${name}: no duplicate processing`);
-      const stats = await Promise.all(clients.map(client => command(client, 'stats')));
-      assert(stats.every(stat => stat.leaseJitter.scheduled === 0),
-        'Do not jitter overdue backlog');
-      report.scenarios[name] = {acquired: works.length, jitterScheduled: 0};
-    }
-    const limited = await configure('limited-arrivals', true, 3);
-    for (let i = 0; i < 20; i++) {
-      const key = `fresh-${i}`;
-      await enqueue(limited, key);
-      await retired(limited, key);
-    }
-    assert.equal(works.length, 20, 'Limited listeners acquire each fresh task once');
-    assert(works.every(work => work.firstAcquisition && work.attempt === 1));
-    report.scenarios['limited-arrivals'] = await summarize();
-    if (workers > 1) assert(report.scenarios['limited-arrivals'].suppressed > 0);
-
-    const pings = await configure('pings', true);
-    for (let i = 0; i < 20; i++) {
-      // Match QueueSource.checkPing(): expiry is the server timestamp, with no created/affinity.
-      await pings.child('ping').set({
-        timestamp: Date.now(), _lease: {expiry: ServerValue.TIMESTAMP}
-      });
-      await new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => {reject(new Error('Ping was not deleted'));}, 10_000);
-        function observe(snapshot) {
-          if (snapshot.exists()) return;
-          clearTimeout(timeout);
-          pings.child('ping').off('value', observe);
-          resolve();
+    if (values['compare-gain']) {
+      // All workers on this path use the same controller; identities survive paired phases.
+      report.comparison = 'Fixed gain 2 versus bounded rate-normalized gain';
+      const modes = values.reverse ? ['normalized', 'fixed'] : ['fixed', 'normalized'];
+      for (const mode of modes) {
+        for (const scenario of ['rate', 'burst', 'scale-down', 'saturated']) {
+          const ref = await configure(`${mode}-${scenario}`, true, undefined, {
+            fixedGain: mode === 'fixed', capacity: scenario === 'saturated' ? 2 : 20
+          });
+          const phases = scenario === 'rate' ? [4, 40, 4] :
+            scenario === 'scale-down' ? [20, 8] : [40];
+          let previous, workOffset = 0;
+          const phasesReport = [];
+          for (const [phase, rate] of phases.entries()) {
+            let survivor;
+            if (scenario === 'scale-down' && phase === 1) {
+              const stats = await Promise.all(clients.map(client => command(client, 'stats')));
+              survivor = stats.reduce((best, stat, index) =>
+                stat.leaseJitter.window > stats[best].leaseJitter.window ? index : best, 0);
+              await Promise.all(clients.map((client, index) =>
+                command(client, 'quota', {value: index === survivor ? 200 : 0})));
+            }
+            const start = performance.now(), writes = [], keys = [];
+            const count = phase === 0 && scenario === 'rate' || phase === 2 ?
+              Math.max(20, Math.floor(taskCount / 2)) : taskCount;
+            for (let i = 0; i < count; i++) {
+              const due = scenario === 'burst' ? Math.floor(i / 20) * 2000 : i * 1000 / rate;
+              await sleep(Math.max(0, start + due - performance.now()));
+              const key = `${phase}-${i}`;
+              keys.push(key);
+              writes.push(enqueue(ref, key, {hold: scenario === 'saturated' ? 500 : 30},
+                `owner|repo|${i % 32}`));
+            }
+            await Promise.all(writes);
+            await Promise.all(keys.map(key => retired(ref, key)));
+            const result = await summarize(workOffset, previous);
+            assert.equal(works.length - workOffset, count, 'Every arrival processed exactly once');
+            assert.equal(result.acquired, count);
+            assert.equal(result.failed, 0);
+            assert(works.slice(workOffset).every(work =>
+              work.firstAcquisition && work.attempt === 1));
+            phasesReport.push({...result, rate, elapsedMs: performance.now() - start, survivor});
+            console.log(JSON.stringify({mode, scenario, phase, ...phasesReport.at(-1)}));
+            previous = await summarize();
+            workOffset = works.length;
+          }
+          report.scenarios[`${mode}-${scenario}`] = phasesReport;
         }
-        pings.child('ping').on('value', observe);
-      });
-      await sleep(100);
+      }
+    } else {
+      for (const enabled of [false, true]) {
+        const name = enabled ? 'adaptive' : 'baseline';
+        const ref = await configure(name, enabled);
+        for (let i = 0; i < taskCount; i++) {
+          const key = `task-${i}`;
+          await enqueue(ref, key, {}, `owner|repo|${i % 16}`);
+          await retired(ref, key);
+        }
+        assert.equal(works.length, taskCount, `${name}: each task acquired once`);
+        assert(works.every(work => work.firstAcquisition && work.attempt === 1));
+        report.scenarios[name] = await summarize();
+        console.log(JSON.stringify({scenario: name, ...report.scenarios[name]}));
+      }
+      if (workers > 1) {
+        assert(report.scenarios.adaptive.amplification < report.scenarios.baseline.amplification,
+          'Adaptive jitter must reduce transactions per acquisition');
+        assert(report.scenarios.adaptive.suppressed > 0);
+      } else {
+        assert.equal(report.scenarios.adaptive.amplification, 1);
+        assert.deepEqual(report.scenarios.adaptive.windowsMs, [0], 'A lone worker stops delaying');
+      }
+      assert.equal(report.scenarios.adaptive.failed, 0);
+
+      const ref = await configure('lifecycle', true);
+      // A recurring PR affinity uses distinct task keys, so affinity cannot come from key reuse.
+      for (let i = 0; i < 20; i++) {
+        await enqueue(ref, `affinity-${i}`, {}, 'owner|cached-repo|123');
+        await retired(ref, `affinity-${i}`);
+      }
+      const affinityCounts = new Map();
+      for (const work of works) {
+        affinityCounts.set(work.worker, (affinityCounts.get(work.worker) ?? 0) + 1);
+      }
+      const [preferred, wins] = [...affinityCounts].sort((a, b) => b[1] - a[1])[0];
+      assert(wins >= 12, 'At least 60% of recurring affinity should reach the same worker');
+      if (workers > 1) {
+        await command(clients[preferred], 'quota', {value: 0});
+        await enqueue(ref, 'busy-fallback', {}, 'owner|cached-repo|123');
+        await retired(ref, 'busy-fallback');
+        assert.notEqual(works.find(work => work.key === 'busy-fallback').worker, preferred);
+        await command(clients[preferred], 'quota', {value: 200});
+      }
+
+      await enqueue(ref, 'retry', {retry: true});
+      await retired(ref, 'retry', 2);
+      const retries = works.filter(work => work.key === 'retry');
+      assert.deepEqual(retries.map(work => work.attempt), [1, 2]);
+      assert.deepEqual(retries.map(work => work.firstAcquisition), [true, false]);
+      // Keep working past the original two-second lease, but within the extension.
+      await enqueue(ref, 'extended', {extend: true, hold: 2300});
+      await retired(ref, 'extended');
+      assert.equal(works.filter(work => work.key === 'extended').length, 1);
+      if (workers > 1) {
+        await command(clients[preferred], 'offline');
+        await enqueue(ref, 'offline-fallback', {}, 'owner|cached-repo|123');
+        await retired(ref, 'offline-fallback');
+        assert.notEqual(works.find(work => work.key === 'offline-fallback').worker, preferred);
+        await command(clients[preferred], 'online');
+      }
+      report.scenarios.lifecycle = {
+        affinityWins: wins, affinityTasks: 20,
+        busyFallback: workers > 1 ? true : null, disconnectFallback: workers > 1 ? true : null,
+        retryAttempts: retries.map(work => work.attempt), extensionAcquisitions: 1
+      };
+      // Replay must process already eligible backlog with no jitter, including limited listeners.
+      for (const bufferSize of [undefined, 3]) {
+        const name = bufferSize ? 'limited-backlog' : 'backlog';
+        await root.child(name).set(Object.fromEntries(Array.from({length: 12}, (_, i) => [
+          `old-${i}`,
+          {payload: i, _lease: {created: Date.now() - 60_000, expiry: Date.now() - 60_000}}
+        ])));
+        const backlog = await configure(name, true, bufferSize);
+        await waitFor(() => works.length >= 12, name);
+        for (let i = 0; i < 12; i++) await retired(backlog, `old-${i}`);
+        assert.equal(works.length, 12, `${name}: no duplicate processing`);
+        const stats = await Promise.all(clients.map(client => command(client, 'stats')));
+        assert(stats.every(stat => stat.leaseJitter.scheduled === 0),
+          'Do not jitter overdue backlog');
+        report.scenarios[name] = {acquired: works.length, jitterScheduled: 0};
+      }
+      const limited = await configure('limited-arrivals', true, 3);
+      for (let i = 0; i < 20; i++) {
+        const key = `fresh-${i}`;
+        await enqueue(limited, key);
+        await retired(limited, key);
+      }
+      assert.equal(works.length, 20, 'Limited listeners acquire each fresh task once');
+      assert(works.every(work => work.firstAcquisition && work.attempt === 1));
+      report.scenarios['limited-arrivals'] = await summarize();
+      if (workers > 1) assert(report.scenarios['limited-arrivals'].suppressed > 0);
+
+      const pings = await configure('pings', true);
+      for (let i = 0; i < 20; i++) {
+      // Match QueueSource.checkPing(): expiry is the server timestamp, with no created/affinity.
+        await pings.child('ping').set({
+          timestamp: Date.now(), _lease: {expiry: ServerValue.TIMESTAMP}
+        });
+        await new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => {reject(new Error('Ping was not deleted'));}, 10_000);
+          function observe(snapshot) {
+            if (snapshot.exists()) return;
+            clearTimeout(timeout);
+            pings.child('ping').off('value', observe);
+            resolve();
+          }
+          pings.child('ping').on('value', observe);
+        });
+        await sleep(100);
+      }
+      assert.equal(works.length, 0, 'Pings do not enter application handlers');
+      const pingStats = await Promise.all(clients.map(client => command(client, 'stats')));
+      const scheduled = pingStats.reduce((sum, stat) => sum + stat.leaseJitter.scheduled, 0);
+      const suppressed = pingStats.reduce((sum, stat) => sum + stat.leaseJitter.suppressed, 0);
+      assert(scheduled >= 20);
+      if (workers > 1) assert(suppressed > 0);
+      assert(pingStats.every(stat => stat.leaseTransactions.acquired === 0));
+      report.scenarios.pings = {deleted: 20, scheduled, suppressed, handlerCalls: works.length};
     }
-    assert.equal(works.length, 0, 'Pings do not enter application handlers');
-    const pingStats = await Promise.all(clients.map(client => command(client, 'stats')));
-    const scheduled = pingStats.reduce((sum, stat) => sum + stat.leaseJitter.scheduled, 0);
-    const suppressed = pingStats.reduce((sum, stat) => sum + stat.leaseJitter.suppressed, 0);
-    assert(scheduled >= 20);
-    if (workers > 1) assert(suppressed > 0);
-    assert(pingStats.every(stat => stat.leaseTransactions.acquired === 0));
-    report.scenarios.pings = {deleted: 20, scheduled, suppressed, handlerCalls: works.length};
+    // Prove why child_removed alone cannot distinguish limited-query eviction from deletion.
+    const removalRef = root.child('removal-snapshots');
+    const removalQuery = removalRef.orderByChild('_lease/expiry').limitToFirst(1);
+    const oldValue = {_lease: {expiry: 100}, payload: 'same-old-value'};
+    const removals = [];
+    const onRemoval = snapshot => {removals.push(snapshot.val());};
+    await removalRef.child('later').set(oldValue);
+    removalQuery.on('child_removed', onRemoval);
+    await removalQuery.once('value');
+    await removalRef.child('later').remove();
+    await waitFor(() => removals.length === 1, 'limited deletion snapshot');
+    await removalRef.child('later').set(oldValue);
+    await removalQuery.once('value');
+    await removalRef.child('earlier').set({_lease: {expiry: 0}});
+    await waitFor(() => removals.length === 2, 'limited eviction snapshot');
+    assert.deepEqual(removals, [oldValue, oldValue]);
+    assert((await removalRef.child('later').once('value')).exists());
+    removalQuery.off('child_removed', onRemoval);
+    report.limitedRemovalSnapshots = {deletion: removals[0], eviction: removals[1],
+      evictedTaskStillExists: true};
     assert.equal(errors.length, 0, JSON.stringify(errors));
     await Promise.all(clients.map(client => command(client, 'stop')));
     await Promise.all(clients.map(client => client.process.exitCode === null ?

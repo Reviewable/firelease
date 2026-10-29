@@ -51,20 +51,29 @@ per uncontended opportunity and slightly increases growth per race: it usually t
 window for fewer collisions, but the cap and changing workloads can prevent reaching the target.
 Setting both bounds to zero retains observation/feedback but never delays acquisition.
 
-The update is `window += 2 * propagation * (raced - targetRaceRate)`, clamped to the bounds.
+The update is `window += gain * propagation * (raced - targetRaceRate)`, clamped to the bounds.
 `raced` is one for a contended attempt, zero for a win or suppression. `propagation` is a 0.1-alpha
 EMA in milliseconds, initially 100 ms, estimated from successful transaction time per try
-(excluding prefetch) or the delay in observing a competing lease. The dimensionless gain 2 makes
-a default race add roughly two propagation times, while clean opportunities remove a small fraction.
-With a 100 ms estimate, a race adds 190 ms and a clean opportunity removes 10 ms; the expected update
-is zero at 5% races.
+(excluding prefetch) or the delay in observing a competing lease.
 
-The gain is a tuning choice, not a uniquely derived or optimized constant. Holding the propagation
-estimate fixed at 100 ms, gain 1 would add 95 ms per race and subtract 5 ms per clean opportunity;
-gain 3 would add 285 ms and subtract 15 ms. Relative to gain 2, those are half-sized and 1.5-times
-sized steps. The target balance stays at 5%, but smaller steps adapt more slowly and smoothly;
-larger steps react faster while amplifying noise and risking more overshoot/oscillation. The live
-evidence uses gain 2; it does not establish that 2 is optimal or compare gains 1 and 3.
+Gain is `min(2, 40 / rate)`, where `rate` estimates eligible feedback opportunities per second,
+including wins, races, and suppressions, but excluding failures and bypassed work. An exponentially
+decaying count is updated on each observation: `count = count * exp(-elapsedMs / 5000) + 1`, then
+`rate = count / 5`. Elapsed time uses a monotonic process clock. The current observation is included
+before computing gain, so simultaneous bursts are counted too. No background timer runs, and idle
+windows are never aged or reset. A pause forgets old rate evidence only when feedback resumes;
+the gain cap prevents a large catch-up step.
+
+Below about 20 eligible opportunities/s, gain remains 2: at 100 ms propagation a race adds 190 ms
+and a clean opportunity removes 10 ms. Above that rate, observations share approximately 40 units
+of gain per second rather than making adaptation arbitrarily faster with traffic. Quiet queues
+remain sample-limited. The five-second smoothing and conservative cap preserve the existing
+low-rate behavior; they are internal tuning constants, not new queue options. This is a response
+normalization, not a promise of lower contention or latency on every workload. Queue-specific
+latency policy still belongs in the window bounds and race target.
+
+The [gain experiments](evidence/lease-jitter-gain.md) compare fixed gain with normalized candidates,
+including latency and transaction-cost tradeoffs. They do not establish a universal optimum.
 
 Ping tasks use the same scheduling and controller feedback, including suppression when another
 worker deletes the ping. They still do not enter application handlers or application metric
@@ -77,6 +86,11 @@ and scheduled counts are available for logs and diagnostics; exporting every val
 metric is unnecessary. Measure amplification from existing transaction counts and use the jitter
 callback for an aggregated suppression count and sampled pickup timing. Do not put affinity or
 task keys in metric attributes.
+Suppression counts are confirmed observations, not a complete count of avoided transactions.
+Limited queries report both deletions and query-window evictions using the old child snapshot;
+ambiguous removals cancel pending waits but do not train the controller or increment suppression.
+This includes some deleted pings. Confirming each removal would require extra reads on losing
+instances. Full listeners do not have this ambiguity.
 
 On-demand live testing
 ----------------------
@@ -99,9 +113,19 @@ with `.read` and `.write` both `false`. An optional `_lease/expiry` index on tes
 limited-query warnings; the small fixtures also work without it.
 
 Defaults use eight workers plus one coordinator; hard bounds are 20 workers and 300 tasks per
-mode. Tasks are small and run sequentially in the comparison, rather than producing an unbounded
-load. Use a dedicated test project, keep credentials outside the checkout, and do not run this in
-ordinary CI. Abrupt termination can leave a UUID subtree for manual cleanup.
+phase. The default comparison enqueues small tasks sequentially. Add `--compare-gain` for paired
+fixed/normalized trials with independent timed arrivals, rate changes, bursts, scale-down to the
+highest-window survivor, and saturation. `--reverse` reverses mode order. Modes share worker
+identities but never mix controllers on the same queue. Experimental gain diagnostics stay in the
+local report, not application metrics. Use a dedicated test project, keep credentials outside the
+checkout, and do not run this in ordinary CI. Abrupt termination can leave a UUID subtree for manual
+cleanup.
+
+`yarn test:simulation --seeds 16 --offset 100 --candidates fixed,default --output gain.json`
+runs the deterministic closed-loop model without Firebase. It uses actual controller/scheduling
+code, paired seeded arrival/network traces, and simplified server/capacity behavior. It does not
+model Firebase retries or application caches; validate finalists live rather than treating its
+transaction counts or latency percentiles as production predictions.
 
 API
 ---

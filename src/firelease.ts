@@ -659,6 +659,9 @@ class QueueListener {
     this.snapshots.delete(Task.makeKey(snap));
     const lease = (snap.val() as LeaseItem | null)?._lease;
     // A limited query can evict an eligible task merely because another task sorts before it.
+    // child_removed carries the OLD value, not a deletion marker. Ambiguous removals (including
+    // deleted pings) cancel waits but deliberately do not train: confirming each one would add
+    // a point read per losing worker, defeating the reduction in overlapping Firebase work.
     this.source.removeTask(
       snap, this.mode === 'full' || !!(lease?.busy && lease.expiry! > snap.ref.now));
     this.notify();

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import firelease, {TESTABLES, type LeaseJitterMetric} from '../src';
-import {LeaseJitter, LeaseJitterSchedule} from '../src/jitter';
+import {LeaseJitter, LeaseJitterGain, LeaseJitterSchedule} from '../src/jitter';
 import {asNodeFire, FakeQueueRef, waitFor} from './fake_firebase';
 
 test('affinity is stable across tasks, distinguishes instances, and spreads different keys', () => {
@@ -19,14 +19,61 @@ test('controller bounds contention feedback and rejects invalid timings', () => 
   controller.observePropagation(NaN);
   controller.observePropagation(-100);
   controller.observePropagation(60_000);
-  controller.record('contended');
+  controller.record('contended', 0);
   assert.equal(controller.stats.window, 440);
-  for (let i = 0; i < 19; i++) controller.record('suppressed');
+  for (let i = 0; i < 19; i++) controller.record('suppressed', (i + 1) * 1000);
   assert.equal(controller.stats.window, 250);
-  for (let i = 0; i < 1000; i++) controller.record('contended');
+  for (let i = 0; i < 1000; i++) controller.record('contended', (i + 20) * 1000);
   assert.equal(controller.stats.window, 5000);
-  for (let i = 0; i < 1000; i++) controller.record('suppressed');
+  for (let i = 0; i < 1000; i++) controller.record('suppressed', (i + 1020) * 1000);
   assert.equal(controller.stats.window, 0);
+});
+
+test('gain is bounded for sparse observations and simultaneous bursts', () => {
+  const gain = new LeaseJitterGain();
+  assert.equal(gain.next(0), 2);
+  for (let i = 1; i < 100; i++) assert.equal(gain.next(0), 2);
+  for (let i = 100; i < 200; i++) gain.next(0);
+  assert.equal(gain.next(0), 200 / 201);
+  // A pause only forgets old rate evidence, never grants an unbounded catch-up adjustment.
+  assert.equal(gain.next(3_600_000), 2);
+  assert.equal(gain.next(3_599_000), 2, 'Backwards clocks do not add elapsed time');
+});
+
+test('busy sources share a per-second gain budget instead of a per-task gain', () => {
+  for (const rate of [40, 400, 4000]) {
+    const gain = new LeaseJitterGain();
+    let budget = 0;
+    for (let i = 0; i < rate * 60; i++) {
+      const next = gain.next(i * 1000 / rate);
+      if (i >= rate * 59) budget += next;
+    }
+    assert(Math.abs(budget - 40) < 0.11, `rate ${rate}: gain budget ${budget}`);
+  }
+});
+
+test('wins, contentions and suppressions all contribute to the opportunity rate', () => {
+  const changes: number[] = [];
+  for (const outcome of ['acquired', 'contended', 'suppressed'] as const) {
+    const controller = new LeaseJitter({maxWindow: 1e9});
+    controller.stats.window = 1e6;
+    for (let i = 0; i < 200; i++) controller.record(outcome, 0);
+    const before = controller.stats.window;
+    controller.record(outcome, 0);
+    changes.push((controller.stats.window - before) / (outcome === 'contended' ? 0.95 : -0.05));
+  }
+  assert(changes.every(change => Math.abs(change - 20000 / 201) < 1e-8));
+});
+
+test('idle controllers retain their window and resume with a bounded update', () => {
+  const controller = new LeaseJitter();
+  for (let i = 0; i < 100; i++) controller.record('acquired', 0);
+  controller.stats.window = 1000;
+  const before = controller.delay('affinity');
+  assert.equal(controller.stats.window, 1000);
+  assert.equal(controller.delay('affinity'), before);
+  controller.record('contended', 3_600_000);
+  assert.equal(controller.stats.window, 1190);
 });
 
 test('deadlines survive rescans and payload updates and renew after lease expiry', () => {
@@ -84,14 +131,14 @@ function slowAffinity() {
 
 test('wins decay to zero, but a new race reopens the window', () => {
   const controller = new LeaseJitter();
-  for (let i = 0; i < 30; i++) controller.record('acquired');
+  for (let i = 0; i < 30; i++) controller.record('acquired', i * 1000);
   assert.equal(controller.stats.window, 0);
   assert.equal(controller.delay('anything'), 0);
-  controller.record('contended');
+  controller.record('contended', 30_000);
   assert.equal(controller.stats.window, 190);
-  for (let i = 0; i < 1000; i++) controller.record('contended');
+  for (let i = 0; i < 1000; i++) controller.record('contended', (i + 31) * 1000);
   assert.equal(controller.stats.window, 5000);
-  for (let i = 0; i < 1000; i++) controller.record('acquired');
+  for (let i = 0; i < 1000; i++) controller.record('acquired', (i + 1031) * 1000);
   assert.equal(controller.stats.window, 0, 'A previously contended source also scales down');
 });
 
@@ -200,6 +247,52 @@ test('single-try pings decay the window while retried deletions grow it', async 
     } finally {
       TESTABLES.resetBetweenTests();
     }
+  }
+});
+
+test('limited removals cancel waits without treating old snapshots as deletion proof', async () => {
+  for (const key of ['fresh', 'ping']) {
+    TESTABLES.resetBetweenTests();
+    try {
+      const source = new FakeQueueRef(`limited-removal-${key}`, 'queue');
+      let calls = 0;
+      firelease.attachWorker(asNodeFire(source), {
+        bufferSize: 1, leaseJitter: {minWindow: 1000, maxWindow: 1000},
+        captureLeaseJitterMetrics: () => {calls++;}
+      }, () => {calls++;});
+      await waitFor(() => firelease.stats.queues[0]?.sources[0].connected);
+      const task = source.addTask(key, {_lease: {affinity: slowAffinity(), expiry: source.now}});
+      assert.equal(firelease.stats.leaseJitter?.scheduled, 1);
+      await task.remove();
+      assert.equal(firelease.stats.leaseJitter?.suppressed, 0);
+      assert.equal(firelease.stats.leaseJitter?.window, 1000);
+      await new Promise(resolve => {setTimeout(resolve, 1100);});
+      assert.equal(calls, 0);
+      assert.equal(firelease.stats.leaseTransactions.acquired, 0);
+    } finally {
+      TESTABLES.resetBetweenTests();
+    }
+  }
+});
+
+test('limited query eviction is not clean feedback', async () => {
+  TESTABLES.resetBetweenTests();
+  try {
+    const source = new FakeQueueRef('limited-eviction', 'queue');
+    firelease.attachWorker(asNodeFire(source), {
+      bufferSize: 1, leaseJitter: {minWindow: 1000, maxWindow: 1000}
+    }, () => undefined);
+    await waitFor(() => firelease.stats.queues[0]?.sources[0].connected);
+    source.addTask('later', {_lease: {affinity: slowAffinity(), expiry: source.now}});
+    assert.equal(firelease.stats.leaseJitter?.scheduled, 1);
+    // The earlier key occupies the query window, evicting an unchanged pending task.
+    source.addTask('earlier', {_lease: {expiry: source.now - 10000}});
+    assert.equal(firelease.stats.leaseJitter?.suppressed, 0);
+    await waitFor(() => firelease.stats.leaseTransactions.acquired === 2);
+    assert.equal(firelease.stats.leaseJitter?.scheduled, 2);
+    assert.equal(firelease.stats.leaseJitter?.suppressed, 0);
+  } finally {
+    TESTABLES.resetBetweenTests();
   }
 });
 

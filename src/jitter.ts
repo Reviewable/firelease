@@ -1,13 +1,33 @@
 import _ from 'lodash';
 import {hash, randomUUID} from 'node:crypto';
 import ms from 'ms';
+import {performance} from 'node:perf_hooks';
 import type {Duration} from './firelease';
 import type {LeaseJitterStats} from './stats';
 
 const INSTANCE_ID = randomUUID();
 // Freshness/measurement limits are independent of the caller's chosen delay cap.
 const FRESHNESS_LIMIT = 5000;
-const CONTROLLER_GAIN = 2;
+
+/** Internal tuning seam for deterministic experiments, not a public queue option. */
+export class LeaseJitterGain {
+  private mass = 0;
+  private lastTime?: number;
+
+  constructor(
+    private readonly maximum = 2, private readonly budget = 40,
+    private readonly smoothingMs = 5000
+  ) {}
+
+  next(now: number) {
+    // Exponentially decaying opportunity count, divided by its time constant, estimates /s.
+    // Include this observation before choosing the gain, bounding even a simultaneous burst.
+    const elapsed = this.lastTime === undefined ? 0 : Math.max(0, now - this.lastTime);
+    this.lastTime = Math.max(this.lastTime ?? now, now);
+    this.mass = this.mass * Math.exp(-elapsed / this.smoothingMs) + 1;
+    return Math.min(this.maximum, this.budget * this.smoothingMs / (1000 * this.mass));
+  }
+}
 
 export interface LeaseJitterOptions {
   /** Fraction of jittered opportunities allowed to race; must be strictly between 0 and 1. */
@@ -29,7 +49,8 @@ export class LeaseJitter {
   private propagation = 100;
 
   constructor(
-    options: LeaseJitterOptions = {}, private readonly instanceId: string = INSTANCE_ID
+    options: LeaseJitterOptions = {}, private readonly instanceId: string = INSTANCE_ID,
+    private readonly gain = new LeaseJitterGain()
   ) {
     this.options = {
       targetRaceRate: options.targetRaceRate ?? 0.05,
@@ -64,17 +85,14 @@ export class LeaseJitter {
   }
 
   /** Train once per jittered opportunity; failures and bypassed backlog do not train. */
-  record(outcome: 'acquired' | 'contended' | 'suppressed') {
+  record(outcome: 'acquired' | 'contended' | 'suppressed', now = performance.now()) {
     if (outcome === 'suppressed') this.stats.suppressed++;
     const {minWindow, maxWindow, targetRaceRate} = this.options;
-    // Integral feedback: E[delta] = gain * propagation * (observed race rate - target).
-    // At the defaults and 100ms propagation, a race adds 190ms; a win/suppression removes 10ms.
-    // Gain 2 is a dimensionless responsiveness choice: correct by about two propagation times
-    // per race, then decay cautiously. Counting wins also lets a lone worker reach zero delay.
-    // Gain 1 would halve every step; gain 3 would multiply it by 1.5, without changing the
-    // balance point at the target. Larger steps adapt faster but amplify noise and overshoot.
+    // Normalize feedback by eligible opportunities/s, not by transactions actually sent.
+    // Quiet sources remain sample-limited; busy sources share a roughly fixed gain budget/s.
+    // No timer or idle window ageing: only feedback changes the window.
     this.stats.window = Math.max(minWindow, Math.min(maxWindow,
-      this.stats.window + CONTROLLER_GAIN * this.propagation *
+      this.stats.window + this.gain.next(now) * this.propagation *
         ((outcome === 'contended' ? 1 : 0) - targetRaceRate)));
   }
 }

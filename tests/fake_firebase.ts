@@ -18,10 +18,10 @@ type ConnectionListener = {
 };
 
 class FakeSnapshot {
-  constructor(readonly ref: FakeTaskRef) {}
+  constructor(readonly ref: FakeTaskRef, private readonly value = clone(ref.value)) {}
 
   val() {
-    return clone(this.ref.value);
+    return clone(this.value);
   }
 }
 
@@ -144,6 +144,7 @@ export class FakeTaskRef {
 class FakeQuery {
   readonly listeners: Record<string, Listener[]> = {};
   knownKeys = new Set<string>();
+  knownSnapshots = new Map<string, FakeSnapshot>();
   limit = Infinity;
 
   constructor(readonly queueRef: FakeQueueRef) {
@@ -171,6 +172,7 @@ class FakeQuery {
     if (event === 'child_added') {
       const selected = this.selectedTasks();
       this.knownKeys = new Set(selected.map(task => task.key));
+      this.knownSnapshots = new Map(selected.map(task => [task.key, new FakeSnapshot(task)]));
       for (const task of selected) callback.call(context, new FakeSnapshot(task));
     } else if (event === 'value') {
       this.queueRef.dispatchValue(callback, context);
@@ -198,7 +200,7 @@ class FakeQuery {
     const nextKeys = new Set(selected.map(task => task.key));
     for (const key of this.knownKeys) {
       if (!nextKeys.has(key)) {
-        this.emit('child_removed', new FakeSnapshot(this.queueRef.child(key)));
+        this.emit('child_removed', this.knownSnapshots.get(key)!);
       }
     }
     for (const task of selected) {
@@ -209,6 +211,7 @@ class FakeQuery {
       }
     }
     this.knownKeys = nextKeys;
+    this.knownSnapshots = new Map(selected.map(task => [task.key, new FakeSnapshot(task)]));
   }
 
   emit(event: string, snapshot: FakeSnapshot) {
@@ -324,7 +327,7 @@ export class FakeQueueRef {
     if (previous === null && task.value !== null) {
       this.emit('child_added', new FakeSnapshot(task));
     } else if (previous !== null && task.value === null) {
-      this.emit('child_removed', new FakeSnapshot(task));
+      this.emit('child_removed', new FakeSnapshot(task, previous));
     } else if (task.value !== null) {
       this.emit('child_changed', new FakeSnapshot(task));
     }

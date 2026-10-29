@@ -1,5 +1,9 @@
 # Affinity jitter: live Firebase evidence
 
+These low-rate measurements precede rate-normalized gain. See the
+[current gain experiments](lease-jitter-gain.md) for paired controller comparisons and a fresh
+lifecycle run; the new gain retains the same cap of 2 at these low opportunity rates.
+
 The on-demand [harness](../tests/live/lease_jitter.mjs) ran independent worker processes
 against a real Firebase database. Each comparison enqueued 120 tasks sequentially across 16 PR
 affinities, first without jitter and then with adaptive jitter. Each phase starts with a fresh

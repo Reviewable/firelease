@@ -1,6 +1,6 @@
 {
   "name": "firelease",
-  "version": "4.6.0",
+  "version": "4.6.1",
   "packageManager": "yarn@4.13.0",
   "description": "Firebase queue consumer for Node with at-least-once semantics",
   "main": "built/index.js",
@@ -17,6 +17,7 @@
     "build": "tsc",
     "test": "node --test --import=tsx tests/*.test.ts",
     "test:live": "node --import=tsx tests/live/lease_jitter.mjs",
+    "test:simulation": "node --import=tsx tests/live/jitter_simulation.mjs",
     "prepack": "tsc"
   },
   "repository": "https://github.com/Reviewable/firelease",
