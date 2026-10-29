@@ -12,7 +12,7 @@ Affinity jitter
 ---------------
 
 Enable `{leaseJitter: true}` on queues that can tolerate a small pickup delay. Each process hashes
-its startup identity with the string returned by the optional `getAffinity(task)` queue option,
+its startup identity with the string returned by the optional `getAffinity(task, key)` queue option,
 or the full task URL when the hook is absent or returns `null`/`undefined`.
 Related tasks with the same affinity tend to run on the same process; different affinities can
 prefer different processes. This is a preference, not ownership, fairness, or serialization. Busy or disconnected
@@ -186,8 +186,10 @@ paths concurrently.
     reported through `settings.captureError` and do not affect task processing.
   * `leaseJitter: {boolean | Object}` opt into adaptive affinity jitter. Defaults to `false`.
     `true` uses the defaults; an object customizes `targetRaceRate`, `minWindow`, and `maxWindow`.
-  * `getAffinity: {function(Object): string | null | undefined}` derive affinity from an unprocessed
-    task snapshot, falling back to its full URL for nullish results or errors. The hook must be
+  * `getAffinity: {function(Object, string): string | null | undefined}` derive affinity from an
+    unprocessed task snapshot and its `ref.key` (not its URL). The key retains NodeFire escaping;
+    use `NodeFire.unescape` on key components if needed. Existing one-argument hooks still work.
+    Nullish results or errors fall back to the full task URL. The hook must be
     fast, synchronous, deterministic, and must not mutate the task. It is only called for
     jitter-enabled application tasks, never pings.
   * `captureLeaseJitterMetrics: {function(Object)}` a synchronous callback receiving either

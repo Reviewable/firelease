@@ -440,6 +440,44 @@ test('missing, nullish, or broken affinity hooks fall back to the task URL', asy
   }
 });
 
+test('affinity receives the ref key before processing and across lease replacements', async t => {
+  TESTABLES.resetBetweenTests();
+  try {
+    const source = new FakeQueueRef('key-affinity', 'queue');
+    const ranked: string[] = [], keys: string[] = [];
+    t.mock.method(LeaseJitter.prototype, 'delay', (affinity: string) => {
+      ranked.push(affinity);
+      return 1;
+    });
+    const attempts = new Map<string, number>();
+    firelease.attachWorker(asNodeFire(source), {
+      leaseJitter: true,
+      getAffinity: (item, key) => {
+        assert.equal(item.$ref, undefined, 'The hook receives an undecorated snapshot');
+        keys.push(key);
+        return key.split('|').slice(0, 2).join('|');
+      }
+    }, item => {
+      const key = item.$ref.key!;
+      assert(keys.includes(key), 'The hook key matches the worker reference');
+      const attempt = (attempts.get(key) ?? 0) + 1;
+      attempts.set(key, attempt);
+      if (attempt === 1) return {expiry: source.now + 10};
+    });
+    await waitFor(() => firelease.stats.queues[0]?.mode === 'full');
+    for (const key of ['owner|repo\\2ename|sha-a', 'owner|repo\\2ename|sha-b']) {
+      const task = source.addTask(key, {events: {}});
+      await waitFor(() => !task.value);
+      assert.equal(attempts.get(key), 2);
+    }
+    assert.deepEqual([...new Set(keys)], ['owner|repo\\2ename|sha-a', 'owner|repo\\2ename|sha-b']);
+    assert.equal(ranked.length, 4);
+    assert(ranked.every(affinity => affinity === 'owner|repo\\2ename'));
+  } finally {
+    TESTABLES.resetBetweenTests();
+  }
+});
+
 test('disabled jitter never calls the affinity hook', async () => {
   TESTABLES.resetBetweenTests();
   try {
