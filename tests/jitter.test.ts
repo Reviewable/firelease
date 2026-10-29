@@ -117,13 +117,51 @@ test('custom bounds clamp startup and lower race targets decay more cautiously',
   assert.equal(schedule.deadline(6000, true), deadline, 'custom long waits keep their deadline');
 });
 
+test('human-readable window bounds normalize like numeric milliseconds', () => {
+  const controller = new LeaseJitter({minWindow: '0.1s', maxWindow: '1.5 seconds'}, 'test');
+  const numeric = new LeaseJitter({minWindow: 100, maxWindow: 1500}, 'test');
+  assert.deepEqual(controller.options, numeric.options);
+  assert.equal(controller.delay('pr'), numeric.delay('pr'));
+  assert.equal(new LeaseJitter({maxWindow: '100 ms'}).stats.window, 100);
+  assert.equal(new LeaseJitter({minWindow: '400ms'}).stats.window, 400);
+  assert.equal(new LeaseJitter({minWindow: '0s', maxWindow: '0ms'}).stats.window, 0);
+  for (const options of [
+    {minWindow: 'invalid'}, {maxWindow: ''}, {minWindow: '-1ms'},
+    {minWindow: '2s', maxWindow: 1000}
+  ]) assert.throws(() => new LeaseJitter(options));
+});
+
+test('propagation excludes prefetch without changing lease duration metrics', async () => {
+  TESTABLES.resetBetweenTests();
+  try {
+    const source = new FakeQueueRef('prefetch-jitter', 'queue');
+    source.transactionTries = 2;
+    source.transactionDuration = 100;
+    source.transactionPrefetchDuration = 1000;
+    const captured: unknown[] = [];
+    firelease.attachWorker(asNodeFire(source), {
+      leaseJitter: true,
+      captureLeaseTransactionMetrics: (...metric) => {captured.push(metric);}
+    }, () => undefined);
+    await waitFor(() => firelease.stats.queues[0]?.mode === 'full');
+    const task = source.addTask('new', {});
+    await waitFor(() => captured.length === 1 && !task.value);
+    // EMA: .9 * 100 + .1 * (100 / 2) = 95ms; a win then subtracts 2 * 95 * .05.
+    assert.equal(firelease.stats.leaseJitter?.window, 240.5);
+    assert.deepEqual(captured, [['acquired', 2, 1100]]);
+    assert.equal(firelease.stats.leaseTransactions.duration, 1100);
+  } finally {
+    TESTABLES.resetBetweenTests();
+  }
+});
+
 test('pings jitter and cancel without invoking workers or application metrics', async () => {
   TESTABLES.resetBetweenTests();
   try {
     const source = new FakeQueueRef('ping-jitter', 'queue');
     let calls = 0;
     firelease.attachWorker(asNodeFire(source), {
-      leaseJitter: {minWindow: 100, maxWindow: 100},
+      leaseJitter: {minWindow: '100ms', maxWindow: '0.1s'},
       captureLeaseJitterMetrics: () => {calls++;},
       captureLeaseTransactionMetrics: () => {calls++;}
     }, () => {calls++;});
@@ -149,6 +187,7 @@ test('single-try pings decay the window while retried deletions grow it', async 
       const source = new FakeQueueRef('ping-feedback', 'queue');
       source.transactionTries = tries;
       source.transactionDuration = tries * 100;
+      source.transactionPrefetchDuration = 1000;
       firelease.attachWorker(asNodeFire(source), {leaseJitter: true}, () => {
         assert.fail('Pings never enter the application handler');
       });

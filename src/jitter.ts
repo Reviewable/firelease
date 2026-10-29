@@ -1,4 +1,7 @@
+import _ from 'lodash';
 import {hash, randomUUID} from 'node:crypto';
+import ms from 'ms';
+import type {Duration} from './firelease';
 import type {LeaseJitterStats} from './stats';
 
 const INSTANCE_ID = randomUUID();
@@ -9,9 +12,9 @@ const CONTROLLER_GAIN = 2;
 export interface LeaseJitterOptions {
   /** Fraction of jittered opportunities allowed to race; must be strictly between 0 and 1. */
   targetRaceRate?: number;
-  /** Minimum and maximum delay windows in milliseconds. Zero disables delay at the floor. */
-  minWindow?: number;
-  maxWindow?: number;
+  /** Numeric milliseconds or human-readable durations. Zero disables delay at the floor. */
+  minWindow?: Duration;
+  maxWindow?: Duration;
 }
 
 export type LeaseJitterMetric =
@@ -21,7 +24,7 @@ export type CaptureLeaseJitterMetrics = (metric: LeaseJitterMetric) => undefined
 /** One controller per physical source; one stable hash seed across this process. */
 export class LeaseJitter {
   readonly stats: LeaseJitterStats = {scheduled: 0, suppressed: 0, window: 250};
-  readonly options: Required<LeaseJitterOptions>;
+  readonly options: {targetRaceRate: number, minWindow: number, maxWindow: number};
   // EMA of notification delay or successful transaction time per try, in milliseconds.
   private propagation = 100;
 
@@ -30,8 +33,10 @@ export class LeaseJitter {
   ) {
     this.options = {
       targetRaceRate: options.targetRaceRate ?? 0.05,
-      minWindow: options.minWindow ?? 0,
-      maxWindow: options.maxWindow ?? 5000
+      minWindow: _.isString(options.minWindow) ?
+        ms(options.minWindow as ms.StringValue) : options.minWindow ?? 0,
+      maxWindow: _.isString(options.maxWindow) ?
+        ms(options.maxWindow as ms.StringValue) : options.maxWindow ?? 5000
     };
     const {targetRaceRate, minWindow, maxWindow} = this.options;
     if (!Number.isFinite(targetRaceRate) || targetRaceRate <= 0 || targetRaceRate >= 1 ||
@@ -66,6 +71,8 @@ export class LeaseJitter {
     // At the defaults and 100ms propagation, a race adds 190ms; a win/suppression removes 10ms.
     // Gain 2 is a dimensionless responsiveness choice: correct by about two propagation times
     // per race, then decay cautiously. Counting wins also lets a lone worker reach zero delay.
+    // Gain 1 would halve every step; gain 3 would multiply it by 1.5, without changing the
+    // balance point at the target. Larger steps adapt faster but amplify noise and overshoot.
     this.stats.window = Math.max(minWindow, Math.min(maxWindow,
       this.stats.window + CONTROLLER_GAIN * this.propagation *
         ((outcome === 'contended' ? 1 : 0) - targetRaceRate)));

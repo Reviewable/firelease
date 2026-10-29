@@ -42,8 +42,9 @@ many idle workers the earliest hashed deadline is typically much smaller. This t
 fewer transactions and is most useful on lightly loaded queues with many idle consumers.
 
 Pass an object to customize the controller, e.g.
-`{leaseJitter: {targetRaceRate: 0.01, minWindow: 0, maxWindow: 2000}}`.
-Bounds are finite, nonnegative numbers of milliseconds with `minWindow <= maxWindow`; the target
+`{leaseJitter: {targetRaceRate: 0.01, minWindow: 0, maxWindow: '2s'}}`.
+Bounds accept numbers of milliseconds or human-readable strings such as `'100ms'` or `'2s'`.
+After parsing they must be finite and nonnegative with `minWindow <= maxWindow`; the target
 must be strictly between zero and one. Missing fields use the defaults above. The initial 250 ms
 window is clamped to the requested bounds, not scaled with them. A lower target reduces the decay
 per uncontended opportunity and slightly increases growth per race: it usually trades a larger
@@ -52,10 +53,18 @@ Setting both bounds to zero retains observation/feedback but never delays acquis
 
 The update is `window += 2 * propagation * (raced - targetRaceRate)`, clamped to the bounds.
 `raced` is one for a contended attempt, zero for a win or suppression. `propagation` is a 0.1-alpha
-EMA in milliseconds, initially 100 ms, estimated from successful transaction time per try or the
-delay in observing a competing lease. The dimensionless gain 2 makes a default race add roughly
-two propagation times, while clean opportunities remove a small fraction. With a 100 ms estimate,
-a race adds 190 ms and a clean opportunity removes 10 ms; the expected update is zero at 5% races.
+EMA in milliseconds, initially 100 ms, estimated from successful transaction time per try
+(excluding prefetch) or the delay in observing a competing lease. The dimensionless gain 2 makes
+a default race add roughly two propagation times, while clean opportunities remove a small fraction.
+With a 100 ms estimate, a race adds 190 ms and a clean opportunity removes 10 ms; the expected update
+is zero at 5% races.
+
+The gain is a tuning choice, not a uniquely derived or optimized constant. Holding the propagation
+estimate fixed at 100 ms, gain 1 would add 95 ms per race and subtract 5 ms per clean opportunity;
+gain 3 would add 285 ms and subtract 15 ms. Relative to gain 2, those are half-sized and 1.5-times
+sized steps. The target balance stays at 5%, but smaller steps adapt more slowly and smoothly;
+larger steps react faster while amplifying noise and risking more overshoot/oscillation. The live
+evidence uses gain 2; it does not establish that 2 is optimal or compare gains 1 and 3.
 
 Ping tasks use the same scheduling and controller feedback, including suppression when another
 worker deletes the ping. They still do not enter application handlers or application metric
@@ -97,8 +106,8 @@ ordinary CI. Abrupt termination can leave a UUID subtree for manual cleanup.
 API
 ---
 
-Lease and ping durations can be human-readable strings or numbers of milliseconds. Jitter window
-bounds are numeric milliseconds.
+Lease and ping durations, including jitter window bounds, can be human-readable strings or
+numbers of milliseconds.
 
 The module exposes these functions:
 

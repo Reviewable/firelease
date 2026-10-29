@@ -405,7 +405,9 @@ class Task {
       const tries = transaction?.tries;
       const transactionDuration = (transaction?.prefetchDuration ?? 0) + transaction?.duration;
       if (outcome === 'acquired') {
-        this.source.jitter?.observePropagation(transactionDuration / tries);
+        // Prefetch is a separate read, not part of the transaction's per-try propagation.
+        // Keep it in legacy stats/callback duration below, but exclude it from jitter feedback.
+        this.source.jitter?.observePropagation(transaction.duration / tries);
       }
       leaseStats.tries += tries;
       leaseStats.duration = leaseStats.duration === 0 ?
@@ -657,8 +659,8 @@ class QueueListener {
     this.snapshots.delete(Task.makeKey(snap));
     const lease = (snap.val() as LeaseItem | null)?._lease;
     // A limited query can evict an eligible task merely because another task sorts before it.
-    this.source.removeTask(snap, this.mode === 'full' || !!(lease?.busy &&
-      lease.expiry! > snap.ref.now));
+    this.source.removeTask(
+      snap, this.mode === 'full' || !!(lease?.busy && lease.expiry! > snap.ref.now));
     this.notify();
   };
 
@@ -1234,7 +1236,7 @@ export function getCurrentTask(): WorkerItem | undefined {
  *        healthyPingLatency: {number | string} the maximum response latency to pings that is
  *          considered "healthy" for this queue.
  *        leaseJitter: {boolean | Object} adaptive affinity jitter; an object customizes
- *          targetRaceRate, minWindow, and maxWindow (numeric milliseconds).
+ *          targetRaceRate, minWindow, and maxWindow (milliseconds or human-readable durations).
  *          Defaults to false. Delays never consume concurrency or replace Firebase transactions.
  *        captureLeaseJitterMetrics: {function(Object)} synchronous callback for suppressed
  *          attempts or jittered acquisitions (including pickupDelay in milliseconds).
