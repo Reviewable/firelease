@@ -20,6 +20,23 @@ export interface LeaseTransactionStats {
   duration: number;
 }
 
+export interface LeaseJitterStats {
+  scheduled: number;
+  suppressed: number;
+  /** Current maximum delay, in milliseconds; rollups average enabled sources/queues. */
+  window: number;
+}
+
+function rollUpLeaseJitter(items: (LeaseJitterStats | undefined)[]) {
+  const enabled = _.filter(items, (item): item is LeaseJitterStats => item !== undefined);
+  if (!enabled.length) return;
+  return {
+    scheduled: _.sumBy(enabled, 'scheduled'),
+    suppressed: _.sumBy(enabled, 'suppressed'),
+    window: _.meanBy(enabled, 'window')
+  };
+}
+
 function createLeaseTransactionStats(): LeaseTransactionStats {
   return {acquired: 0, contended: 0, failed: 0, tries: 0, duration: 0};
 }
@@ -57,6 +74,7 @@ export class QueueSourceStats {
   latency: number | null = null;
   declare pingTimestamp?: number;
   readonly leaseTransactions = createLeaseTransactionStats();
+  declare leaseJitter?: LeaseJitterStats;
 
   constructor(readonly ref: string) {}
 }
@@ -71,7 +89,8 @@ export class QueueStats {
   ) {
     exposeGetters(
       this,
-      ['mode', 'size', 'sizeDelta', 'sizeTimestamp', 'healthy', 'maxLatency', 'leaseTransactions'],
+      ['mode', 'size', 'sizeDelta', 'sizeTimestamp', 'healthy', 'maxLatency', 'leaseTransactions',
+        'leaseJitter'],
     );
   }
 
@@ -105,6 +124,10 @@ export class QueueStats {
   get leaseTransactions() {
     return rollUpLeaseTransactions(_.map(this.sources, 'leaseTransactions'));
   }
+
+  get leaseJitter() {
+    return rollUpLeaseJitter(_.map(this.sources, 'leaseJitter'));
+  }
 }
 
 export class FireleaseStats {
@@ -118,7 +141,7 @@ export class FireleaseStats {
       this,
       [
         'healthy', 'sickQueues', 'sickSources', 'stuckTasks', 'maxLatency', 'leaseTransactions',
-        'tasksAcquired'
+        'tasksAcquired', 'leaseJitter'
       ],
     );
   }
@@ -154,5 +177,9 @@ export class FireleaseStats {
 
   get tasksAcquired() {
     return _.sumBy(this.queues, queue => queue.tasksAcquired);
+  }
+
+  get leaseJitter() {
+    return rollUpLeaseJitter(_.map(this.queues, 'leaseJitter'));
   }
 }

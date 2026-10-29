@@ -8,10 +8,138 @@ A Firebase queue consumer for Node with at-least-once and at-most-once semantics
 Install NodeFire 7.2.0 or later in the 7.x series alongside Firelease. It is a peer dependency so
 the application and Firelease share one NodeFire instance and its operation interceptors.
 
+Affinity jitter
+---------------
+
+Enable `{leaseJitter: true}` on queues that can tolerate a small pickup delay. Each process hashes
+its startup identity with the string returned by the optional `getAffinity(task)` queue option,
+or the full task URL when the hook is absent or returns `null`/`undefined`.
+Related tasks with the same affinity tend to run on the same process; different affinities can
+prefer different processes. This is a preference, not ownership, fairness, or serialization. Busy or disconnected
+processes do not prevent others from acquiring tasks. A process restart changes its identity.
+
+For example, use the same hook across queues handling a pull request:
+
+```js
+getAffinity: task => `${task.owner}|${task.repo}|${task.prNumber}`
+```
+
+The hook receives task snapshots before `preprocess` runs and must
+be fast, synchronous, deterministic, and not mutate them. It may be called again on updates;
+pending deadlines remain stable, and new lease generations use the latest affinity. Errors are
+reported through `captureError` and fall back to the task URL. No affinity field is persisted or
+reserved in `_lease`, so older tasks work without a schema change and replacement leases need no
+special handling. Only jitter-enabled, non-ping tasks call the hook.
+Every enabled source on a process uses the same identity, but learns its own delay
+window, so affinity across sources is approximate.
+Different learned windows can favor one idle worker across many affinities; at a zero window the
+hash no longer adds a preference. Local capacity limits still let other workers pick up work.
+
+Jitter applies to live arrivals and lease expiries. Initial backlog, overdue tasks, retries after
+transaction failures, and work held up by local concurrency limits run without additional jitter.
+Each eligibility period gets one deadline; ordinary updates and scans cannot postpone it. Waiting
+does not reserve a worker slot. An observed competing lease/deletion cancels a pending transaction;
+Firebase transactions still provide the correctness guarantee when races remain. Disconnection,
+blacklisting, and listener replacement cancel waits without treating them as contention feedback.
+
+The window starts at 250 ms and stays between 0 and 5 s. Contended jittered attempts increase it;
+successful and suppressed attempts decrease it, targeting a 5% race rate among all three outcomes.
+A lone worker therefore converges to zero delay; a subsequent collision raises the window again.
+Successful acquisitions and observed lease broadcasts estimate propagation time. Failures do not
+train the controller. A window is the maximum possible delay, not the expected winning delay; with
+many idle workers the earliest hashed deadline is typically much smaller. This trades pickup latency for
+fewer transactions and is most useful on lightly loaded queues with many idle consumers.
+
+Pass an object to customize the controller, e.g.
+`{leaseJitter: {targetRaceRate: 0.01, minWindow: 0, maxWindow: '2s'}}`.
+Bounds accept numbers of milliseconds or human-readable strings such as `'100ms'` or `'2s'`.
+After parsing they must be finite and nonnegative with `minWindow <= maxWindow`; the target
+must be strictly between zero and one. Missing fields use the defaults above. The initial 250 ms
+window is clamped to the requested bounds, not scaled with them. A lower target reduces the decay
+per uncontended opportunity and slightly increases growth per race: it usually trades a larger
+window for fewer collisions, but the cap and changing workloads can prevent reaching the target.
+Setting both bounds to zero retains observation/feedback but never delays acquisition.
+
+The update is `window += gain * propagation * (raced - targetRaceRate)`, clamped to the bounds.
+`raced` is one for a contended attempt, zero for a win or suppression. `propagation` is a 0.1-alpha
+EMA in milliseconds, initially 100 ms, estimated from successful transaction time per try
+(excluding prefetch) or the delay in observing a competing lease.
+
+Gain is `min(2, 40 / rate)`, where `rate` estimates eligible feedback opportunities per second,
+including wins, races, and suppressions, but excluding failures and bypassed work. An exponentially
+decaying count is updated on each observation: `count = count * exp(-elapsedMs / 5000) + 1`, then
+`rate = count / 5`. Elapsed time uses a monotonic process clock. The current observation is included
+before computing gain, so simultaneous bursts are counted too. No background timer runs, and idle
+windows are never aged or reset. A pause forgets old rate evidence only when feedback resumes;
+the gain cap prevents a large catch-up step.
+
+Below about 20 eligible opportunities/s, gain remains 2: at 100 ms propagation a race adds 190 ms
+and a clean opportunity removes 10 ms. Above that rate, observations share approximately 40 units
+of gain per second rather than making adaptation arbitrarily faster with traffic. Quiet queues
+remain sample-limited. The five-second smoothing and conservative cap preserve the existing
+low-rate behavior; they are internal tuning constants, not new queue options. This is a response
+normalization, not a promise of lower contention or latency on every workload. Queue-specific
+latency policy still belongs in the window bounds and race target.
+
+The [gain experiments](evidence/lease-jitter-gain.md) compare fixed gain with normalized candidates,
+including latency and transaction-cost tradeoffs. They do not establish a universal optimum.
+
+Ping tasks bypass jitter and never train the controller or enter application handlers or
+application metric callbacks. Ping latency measures queue responsiveness without the intentional
+acquisition delay; it is not a measurement of jittered task pickup latency.
+
+Enabled sources expose `leaseJitter: {scheduled, suppressed, window}` in stats. The counts are
+lifetime totals; queue/global rollups sum them and average windows across enabled children. Window
+and scheduled counts are available for logs and diagnostics; exporting every value as a separate
+metric is unnecessary. Measure amplification from existing transaction counts and use the jitter
+callback for an aggregated suppression count and sampled pickup timing. Do not put affinity or
+task keys in metric attributes.
+Suppression counts are confirmed observations, not a complete count of avoided transactions.
+Limited queries report both deletions and query-window evictions using the old child snapshot;
+ambiguous removals cancel pending waits but do not train the controller or increment suppression.
+Confirming each removal would require extra reads on losing
+instances. Full listeners do not have this ambiguity.
+
+On-demand live testing
+----------------------
+
+`yarn test` uses local fakes and never connects to Firebase. The separate live harness requires a
+test database URL, service-account credentials, and an explicit `--live` flag:
+
+```bash
+GOOGLE_APPLICATION_CREDENTIALS=/path/to/test-service-account.json \
+  yarn test:live --live --database https://your-test-project-default-rtdb.firebaseio.com \
+  --workers 8 --tasks 120 --output live-results.json
+```
+
+The harness launches independent Node processes using the installed NodeFire/Admin SDK, compares
+baseline and adaptive contention, and checks recurring affinity, busy/disconnected fallback,
+retries, extension, pings, and backlog replay with full and limited listeners. It checks first-acquisition
+flags and duplicate processing, saves actual counts and pickup percentiles, and removes only its
+UUID-scoped `/firelease-tests` subtree. It never changes security rules. Admin credentials work
+with `.read` and `.write` both `false`. An optional `_lease/expiry` index on test queue paths avoids
+limited-query warnings; the small fixtures also work without it.
+
+Defaults use eight workers plus one coordinator; hard bounds are 20 workers and 300 tasks per
+phase. The default comparison enqueues small tasks sequentially. Add `--compare-gain` for paired
+fixed/normalized trials with independent timed arrivals, rate changes, bursts, scale-down to the
+highest-window survivor, and saturation. `--reverse` reverses mode order. Modes share worker
+identities but never mix controllers on the same queue. Experimental gain diagnostics stay in the
+local report, not application metrics. Use a dedicated test project, keep credentials outside the
+checkout, and do not run this in ordinary CI. Abrupt termination can leave a UUID subtree for manual
+cleanup.
+
+`yarn test:simulation --seeds 16 --offset 100 --candidates fixed,default --output gain.json`
+runs the deterministic closed-loop model without Firebase. It uses actual controller/scheduling
+code, paired seeded arrival/network traces, and simplified server/capacity behavior. It does not
+model Firebase retries or application caches; validate finalists live rather than treating its
+transaction counts or latency percentiles as production predictions.
+
 API
 ---
 
-All durations can be specified as either a human-readable string, or a number of milliseconds.
+Lease and ping durations, including jitter window bounds, can be human-readable strings or
+numbers of milliseconds.
 
 The module exposes these functions:
 
@@ -56,6 +184,19 @@ paths concurrently.
     outcome, NodeFire transaction tries, and transaction duration in milliseconds.  Missing optional
     NodeFire metadata is reported as zero.  The callback must be synchronous.  Callback errors are
     reported through `settings.captureError` and do not affect task processing.
+  * `leaseJitter: {boolean | Object}` opt into adaptive affinity jitter. Defaults to `false`.
+    `true` uses the defaults; an object customizes `targetRaceRate`, `minWindow`, and `maxWindow`.
+  * `getAffinity: {function(Object): string | null | undefined}` derive affinity from an unprocessed
+    task snapshot, falling back to its full URL for nullish results or errors. The hook must be
+    fast, synchronous, deterministic, and must not mutate the task. It is only called for
+    jitter-enabled application tasks, never pings.
+  * `captureLeaseJitterMetrics: {function(Object)}` a synchronous callback receiving either
+    `{outcome: 'suppressed'}` when a pending attempt is canceled by an observed lease/deletion,
+    or `{outcome: 'acquired', pickupDelay}` after a jittered acquisition. `pickupDelay` is the
+    time in milliseconds from locally observed eligibility to completion of acquisition, including
+    the transaction (new arrivals start at receipt; scheduled leases start at their expiry).
+    Callback errors do not affect scheduling. The callback itself is not sampled; aggregate
+    counters and sample timing distributions in the consuming application.
 
 * `@param {function(Object):RETRY | number | string | undefined}` worker The worker function that
   handles enqueued tasks.  It will be given a task object as argument, with a special $ref attribute

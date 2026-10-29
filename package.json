@@ -1,6 +1,6 @@
 {
   "name": "firelease",
-  "version": "4.5.0",
+  "version": "4.6.0",
   "packageManager": "yarn@4.13.0",
   "description": "Firebase queue consumer for Node with at-least-once semantics",
   "main": "built/index.js",
@@ -12,10 +12,12 @@
     "update": "yarn up -R '*' && yarn dedupe --strategy highest",
     "latest": "yarn npm-check-updates -i -m --packageManager yarn --install never && yarn install",
     "upgrade": "reviewable-upgrade",
-    "lint": "eslint src/*.ts tests/*.ts",
+    "lint": "eslint src/*.ts tests/*.ts tests/live/*.mjs",
     "check-types": "tsc --noEmit --skipLibCheck && tsc --project tests/tsconfig.json --skipLibCheck",
     "build": "tsc",
     "test": "node --test --import=tsx tests/*.test.ts",
+    "test:live": "node --import=tsx tests/live/lease_jitter.mjs",
+    "test:simulation": "node --import=tsx tests/live/jitter_simulation.mjs",
     "prepack": "tsc"
   },
   "repository": "https://github.com/Reviewable/firelease",

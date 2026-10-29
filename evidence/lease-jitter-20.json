@@ -1,0 +1,132 @@
+{
+  "workers": 20,
+  "tasksPerMode": 120,
+  "scenarios": {
+    "baseline": {
+      "acquired": 120,
+      "contended": 2251,
+      "failed": 0,
+      "tries": 4622,
+      "suppressed": 0,
+      "amplification": 19.758333333333333,
+      "pickupMedianMs": 69,
+      "pickupP95Ms": 75,
+      "tailPickupMedianMs": 66,
+      "windowsMs": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "adaptive": {
+      "acquired": 120,
+      "contended": 177,
+      "failed": 0,
+      "tries": 474,
+      "suppressed": 1909,
+      "amplification": 2.475,
+      "pickupMedianMs": 99,
+      "pickupP95Ms": 169,
+      "tailPickupMedianMs": 115,
+      "windowsMs": [
+        904,
+        632,
+        672,
+        980,
+        459,
+        1376,
+        472,
+        1091,
+        222,
+        689,
+        221,
+        760,
+        329,
+        444,
+        1560,
+        542,
+        1306,
+        1302,
+        964,
+        774
+      ]
+    },
+    "lifecycle": {
+      "affinityWins": 20,
+      "affinityTasks": 20,
+      "busyFallback": true,
+      "disconnectFallback": true,
+      "retryAttempts": [
+        1,
+        2
+      ],
+      "extensionAcquisitions": 1
+    },
+    "backlog": {
+      "acquired": 12,
+      "jitterScheduled": 0
+    },
+    "limited-backlog": {
+      "acquired": 12,
+      "jitterScheduled": 0
+    },
+    "limited-arrivals": {
+      "acquired": 20,
+      "contended": 46,
+      "failed": 0,
+      "tries": 112,
+      "suppressed": 295,
+      "amplification": 3.3,
+      "pickupMedianMs": 103,
+      "pickupP95Ms": 145,
+      "tailPickupMedianMs": 103,
+      "windowsMs": [
+        432,
+        796,
+        487,
+        620,
+        451,
+        425,
+        445,
+        427,
+        632,
+        445,
+        848,
+        447,
+        318,
+        453,
+        287,
+        276,
+        450,
+        427,
+        676,
+        809
+      ]
+    },
+    "pings": {
+      "deleted": 20,
+      "scheduled": 400,
+      "suppressed": 345,
+      "handlerCalls": 0
+    }
+  },
+  "passed": true,
+  "cleanedUp": true
+}

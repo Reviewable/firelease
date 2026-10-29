@@ -5,6 +5,10 @@ import * as timers from 'safe-timers';
 import {AsyncLocalStorage} from 'node:async_hooks';
 import {DatabaseWriteObserver, type CaptureWriteMetrics} from './database';
 import {
+  LeaseJitter, LeaseJitterSchedule, type CaptureLeaseJitterMetrics, type LeaseJitterMetric,
+  type LeaseJitterOptions, type NormalizedLeaseJitterOptions
+} from './jitter';
+import {
   FireleaseStats, QueueSourceStats, QueueStats, type QueueSourceMode
 } from './stats';
 
@@ -82,6 +86,8 @@ export type CaptureLeaseTransactionMetrics = (
 ) => undefined;
 
 export interface QueueOptions {
+  leaseJitter?: boolean | LeaseJitterOptions;
+  getAffinity?: (item: LeaseItem) => string | null | undefined;
   maxConcurrent?: number;
   bufferSize?: number;
   minLease?: Duration;
@@ -89,6 +95,7 @@ export interface QueueOptions {
   healthyPingLatency?: Duration;
   preprocess?: (item: LeaseItem) => LeaseItem;
   captureLeaseTransactionMetrics?: CaptureLeaseTransactionMetrics;
+  captureLeaseJitterMetrics?: CaptureLeaseJitterMetrics;
 }
 
 export type PingReport = FireleaseStats;
@@ -130,6 +137,8 @@ interface LeaseSnapshot {
 }
 
 interface NormalizedQueueOptions {
+  leaseJitter: false | NormalizedLeaseJitterOptions;
+  getAffinity?: QueueOptions['getAffinity'];
   maxConcurrent: number;
   bufferSize: number;
   minLease: number;
@@ -137,6 +146,7 @@ interface NormalizedQueueOptions {
   healthyPingLatency: number;
   preprocess?: (item: LeaseItem) => LeaseItem;
   captureLeaseTransactionMetrics?: CaptureLeaseTransactionMetrics;
+  captureLeaseJitterMetrics?: CaptureLeaseJitterMetrics;
 }
 
 const queues: Queue[] = [];
@@ -162,7 +172,7 @@ export const RETRY = {} as RetryDirective;
 /** Default option values for all subsequent attachWorker calls. */
 export const defaults: QueueOptions = {
   maxConcurrent: Number.MAX_VALUE, bufferSize: Infinity, minLease: '30s', maxLease: '1h',
-  healthyPingLatency: '1.5s'
+  healthyPingLatency: '1.5s', leaseJitter: false
 };
 
 export const stats = new FireleaseStats(() => blacklistedTaskKeys.size);
@@ -250,11 +260,15 @@ class Task {
   removed?: boolean;
   working = false;
   timeout?: timers.Timeout;
+  readonly jitter?: LeaseJitterSchedule;
 
   constructor(readonly source: QueueSource, snap: LeaseSnapshot) {
     this.queue = source.queue;
     this.ref = snap.ref;
     this.key = Task.makeKey(snap);
+    if (source.jitter && this.ref.key !== PING_KEY) {
+      this.jitter = new LeaseJitterSchedule(source.jitter);
+    }
     this.updateFrom(snap);
   }
 
@@ -264,27 +278,37 @@ class Task {
 
   updateFrom(snap: LeaseSnapshot) {
     const value = snap.val() as LeaseItem | null;
+    if (this.jitter?.update(
+      value?._lease, value ? this.queue.getAffinity(value, this.key) : this.key, this.ref.now,
+      this.source.activeListener?.loaded ?? false, this.working
+    )) this.source.captureJitterMetric({outcome: 'suppressed'});
     this.expiry = value?._lease?.expiry ?? this.ref.now;
     // console.log('update', this.key, 'expiry', this.expiry);
     delete this.removed;
   }
 
-  prepare() {
+  prepare(hasQuota = true) {
     if (tasks[this.key] !== this || this.removed || this.working) return false;
     const now = this.ref.now;
-    const busy = this.expiry > now;
+    const deadline = Math.max(this.expiry, this.jitter?.deadline(now, hasQuota) ?? 0);
+    const busy = deadline > now;
     // console.log('prepare', this.ref.key, 'expiry', this.expiry, 'now', now);
-    if (!busy) {
+    if (!busy && hasQuota) {
       // Locally reserve for min lease duration to prevent concurrent transaction attempts.  Expiry
       // will be overwritten when transaction completes or task gets removed.
       this.expiry = now + this.queue.constrainLeaseDuration(0);
     }
     this.timeout?.clear();
-    this.timeout = timers.setTimeout(this.queue.process.bind(this.queue, this), this.expiry - now);
-    return !busy;
+    this.timeout = undefined;
+    if (busy || hasQuota) {
+      this.timeout = timers.setTimeout(
+        this.queue.process.bind(this.queue, this), (busy ? deadline : this.expiry) - now);
+    }
+    return !busy && hasQuota;
   }
 
   async process() {
+    const jitterEligibleAt = this.jitter?.start();
     let startTimestamp = 0;
     let acquired = false;
     let contended = false;
@@ -325,11 +349,18 @@ class Task {
       transactionCompleted = true;
       if (acquired && item !== null && this.ref.key !== PING_KEY) {
         this.recordLeaseTransaction('acquired', transactionPromise.transaction);
+        if (jitterEligibleAt !== undefined) {
+          this.source.jitter!.record('acquired');
+          this.source.captureJitterMetric({
+            outcome: 'acquired', pickupDelay: Math.max(0, this.ref.now - jitterEligibleAt)
+          });
+        }
         if (firstAcquisition) Object.defineProperty(item._lease, 'firstAcquisition', {value: true});
         this.queue.stats.tasksAcquired++;
         await this.run(item as WorkerItem, startTimestamp);
       } else if (contended) {
         this.recordLeaseTransaction('contended', transactionPromise.transaction);
+        if (jitterEligibleAt !== undefined) this.source.jitter!.record('contended');
       }
     } catch (error) {
       if (!transactionCompleted && this.ref.key !== PING_KEY) {
@@ -339,6 +370,7 @@ class Task {
       // Hardcoded retry -- hard to do anything smarter, since we failed to update the task in
       // Firebase.
       this.expiry = 0;
+      this.jitter?.skip();
       if (!/timeout/i.test(error.message) || this.source.connected) {
         console.log(`Queue item ${this.key} lease transaction error: ${error.message}`);
         error.firelease = _.assign(error.firelease ?? {}, {itemKey: this.key, phase: 'leasing'});
@@ -364,6 +396,11 @@ class Task {
       if (!transaction?.tries || transaction?.duration === undefined) return;
       const tries = transaction?.tries;
       const transactionDuration = (transaction?.prefetchDuration ?? 0) + transaction?.duration;
+      if (outcome === 'acquired') {
+        // Prefetch is a separate read, not part of the transaction's per-try propagation.
+        // Keep it in legacy stats/callback duration below, but exclude it from jitter feedback.
+        this.source.jitter?.observePropagation(transaction.duration / tries);
+      }
       leaseStats.tries += tries;
       leaseStats.duration = leaseStats.duration === 0 ?
         transactionDuration || 1 :
@@ -612,7 +649,13 @@ class QueueListener {
 
   readonly onRemove = (snap: LeaseSnapshot) => {
     this.snapshots.delete(Task.makeKey(snap));
-    this.source.removeTask(snap);
+    const lease = (snap.val() as LeaseItem | null)?._lease;
+    // A limited query can evict an eligible task merely because another task sorts before it.
+    // child_removed carries the OLD value, not a deletion marker. Ambiguous removals (including
+    // deleted pings) cancel waits but deliberately do not train: confirming each one would add
+    // a point read per losing worker, defeating the reduction in overlapping Firebase work.
+    this.source.removeTask(
+      snap, this.mode === 'full' || !!(lease?.busy && lease.expiry! > snap.ref.now));
     this.notify();
   };
 
@@ -678,10 +721,31 @@ class QueueSource {
   initialStartupComplete = false;
   readonly connectionRef: NodeFire;
   readonly stats: QueueSourceStats;
+  readonly jitter?: LeaseJitter;
 
   constructor(readonly queue: Queue, readonly ref: NodeFire) {
     this.connectionRef = this.ref.root.child('.info/connected');
     this.stats = new QueueSourceStats(ref.toString());
+    if (queue.options.leaseJitter) {
+      this.jitter = new LeaseJitter(queue.options.leaseJitter);
+      this.stats.leaseJitter = this.jitter.stats;
+    }
+  }
+
+  captureJitterMetric(metric: LeaseJitterMetric) {
+    try {
+      this.queue.options.captureLeaseJitterMetrics?.(metric);
+    } catch (cause) {
+      try {
+        const error: FireleaseError = _.isError(cause) ? cause : new Error(String(cause));
+        error.firelease = {
+          ...error.firelease, phase: 'lease-jitter-metric', source: this.ref.toString()
+        };
+        settings.captureError(error);
+      } catch {
+        // Neither the callback nor the error reporter may interrupt queue scheduling.
+      }
+    }
   }
 
   get adaptive() {
@@ -1007,10 +1071,13 @@ class QueueSource {
     void this.queue.process(task);
   }
 
-  removeTask(snapOrKey: LeaseSnapshot | string) {
+  removeTask(snapOrKey: LeaseSnapshot | string, observedRemoval = false) {
     const taskKey = _.isString(snapOrKey) ? snapOrKey : Task.makeKey(snapOrKey);
     const task = tasks[taskKey];
     if (task?.source !== this) return;
+    if (observedRemoval && !task.working && task.jitter?.suppress(task.ref.now)) {
+      this.captureJitterMetric({outcome: 'suppressed'});
+    }
     task.removed = true;
     if (task.timeout) {
       task.timeout.clear();
@@ -1049,6 +1116,18 @@ class Queue {
     filledOptions.minLease = duration(filledOptions.minLease);
     filledOptions.maxLease = duration(filledOptions.maxLease);
     filledOptions.healthyPingLatency = duration(filledOptions.healthyPingLatency);
+    if (filledOptions.leaseJitter) {
+      const jitter = filledOptions.leaseJitter === true ? {} : filledOptions.leaseJitter;
+      filledOptions.leaseJitter = {
+        targetRaceRate: jitter.targetRaceRate,
+        minWindow: duration(jitter.minWindow ?? 0),
+        maxWindow: duration(jitter.maxWindow ?? 5000)
+      };
+      if (!Number.isFinite(filledOptions.leaseJitter.minWindow) ||
+          !Number.isFinite(filledOptions.leaseJitter.maxWindow)) {
+        throw new Error('Invalid leaseJitter window bounds');
+      }
+    }
     this.options = filledOptions as NormalizedQueueOptions;
     this.worker = worker as Worker;
     this.sources = _.map(this.refs, sourceRef => new QueueSource(this, sourceRef));
@@ -1084,7 +1163,7 @@ class Queue {
   }
 
   async process(task: Task) {
-    if (task.source.connected && this.hasQuota() && task.prepare()) {
+    if (task.source.connected && task.prepare(this.hasQuota())) {
       globalNumConcurrent++;
       this.numConcurrent++;
       try {
@@ -1111,6 +1190,27 @@ class Queue {
   callPreprocess(item: LeaseItem) {
     if (this.options.preprocess) item = this.options.preprocess(item);
     return item;
+  }
+
+  getAffinity(item: LeaseItem, taskKey: string) {
+    try {
+      const affinity = this.options.getAffinity?.(item);
+      if (_.isNil(affinity)) return taskKey;
+      if (!_.isString(affinity)) {
+        throw new Error('getAffinity must return a string or nullish value');
+      }
+      return affinity;
+    } catch (cause) {
+      // Affinity is only an optimization; a broken hook must not stop the queue listener.
+      try {
+        const error: FireleaseError = _.isError(cause) ? cause : new Error(String(cause));
+        error.firelease = {...error.firelease, itemKey: taskKey, phase: 'lease-affinity'};
+        settings.captureError(error);
+      } catch (error) {
+        console.error('Error capturing lease affinity error:', error);
+      }
+      return taskKey;
+    }
   }
 
   async callWorker(item: WorkerItem) {
@@ -1162,6 +1262,15 @@ export function getCurrentTask(): WorkerItem | undefined {
  *          control (e.g., webhooks).
  *        healthyPingLatency: {number | string} the maximum response latency to pings that is
  *          considered "healthy" for this queue.
+ *        leaseJitter: {boolean | Object} adaptive affinity jitter; an object customizes
+ *          targetRaceRate, minWindow, and maxWindow (milliseconds or human-readable durations).
+ *          Defaults to false. Delays never consume concurrency or replace Firebase transactions.
+ *        getAffinity: {function(Object):string | null | undefined} derives cache affinity from a
+ *          task snapshot before preprocessing. Must be fast, synchronous, deterministic, and not
+ *          mutate the task. Nullish results or errors fall back to the full task URL. Only called
+ *          when jitter is enabled, never for pings. Pending deadlines are not moved by updates.
+ *        captureLeaseJitterMetrics: {function(Object)} synchronous callback for suppressed
+ *          attempts or jittered acquisitions (including pickupDelay in milliseconds).
  *        captureLeaseTransactionMetrics: {function(string, number, number)} a callback invoked
  *          after each acquired, contended, or failed task lease transaction with its outcome,
  *          NodeFire transaction tries, and duration in milliseconds.  The callback must be
@@ -1425,12 +1534,14 @@ function resetBetweenTests() {
   shutdownResolve = shutdownReject = shutdownPromise = undefined;
   delete defaults.preprocess;
   delete defaults.captureLeaseTransactionMetrics;
+  delete defaults.captureLeaseJitterMetrics;
   _.assign(defaults, {
     maxConcurrent: Number.MAX_VALUE,
     bufferSize: Infinity,
     minLease: '30s',
     maxLease: '1h',
-    healthyPingLatency: '1.5s'
+    healthyPingLatency: '1.5s',
+    leaseJitter: false
   });
   settings.captureError = defaultCaptureError;
   delete settings.captureWriteMetrics;

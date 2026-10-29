@@ -69,7 +69,7 @@ test('stats are derived through the hierarchy on demand', () => {
     Object.keys(hierarchyStats),
     [
       'databases', 'queues', 'healthy', 'sickQueues', 'sickSources', 'stuckTasks', 'maxLatency',
-      'leaseTransactions', 'tasksAcquired'
+      'leaseTransactions', 'tasksAcquired', 'leaseJitter'
     ],
   );
   assert.deepStrictEqual(JSON.parse(JSON.stringify(hierarchyStats)), {
@@ -120,6 +120,21 @@ test('stats are derived through the hierarchy on demand', () => {
     tasksAcquired: 3
   });
   TESTABLES.resetBetweenTests();
+});
+
+test('jitter rollups sum counts and average only enabled sources and queues', () => {
+  const first = new QueueSourceStats('first');
+  const second = new QueueSourceStats('second');
+  const disabled = new QueueSourceStats('disabled');
+  const queue = new QueueStats('queue', 'queue', [first, second, disabled]);
+  const stats = new FireleaseStats(() => 0);
+  stats.queues.push(queue, new QueueStats('off', 'off', [disabled]));
+  assert.strictEqual(stats.leaseJitter, undefined);
+  first.leaseJitter = {scheduled: 10, suppressed: 8, window: 100};
+  second.leaseJitter = {scheduled: 20, suppressed: 15, window: 200};
+  assert.deepStrictEqual(stats.leaseJitter, {scheduled: 30, suppressed: 23, window: 150});
+  first.leaseJitter.suppressed++;
+  assert.strictEqual(queue.leaseJitter!.suppressed, 24);
 });
 
 test('duration rollups use an unweighted mean at each level', () => {
