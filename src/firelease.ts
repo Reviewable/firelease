@@ -712,7 +712,6 @@ class QueueSource {
   epoch = 0;
   connected = false;
   crashing = false;
-  connectionStartedAt = 0;
   activeListener?: QueueListener;
   checkTimer?: timers.Timeout;
   demotionTimer?: timers.Timeout;
@@ -766,7 +765,6 @@ class QueueSource {
     this.cancelPendingWork();
     if (connected) {
       this.stats.healthy = true;
-      this.connectionStartedAt = performance.now();
       void this.enqueueStartup(epoch);
     } else {
       this.activeListener?.stop();
@@ -796,6 +794,7 @@ class QueueSource {
   }
 
   async initialize(epoch: number) {
+    const start = performance.now();
     try {
       let targetMode: QueueSourceMode = 'safe';
       if (this.adaptive) {
@@ -806,10 +805,10 @@ class QueueSource {
       const loadedMode = await this.loadListener(targetMode, epoch, 'startup');
       if (!loadedMode) return;
       const loadedTaskCount = this.activeListener?.snapshots.size ?? 0;
-      const connectionDuration = Math.round(performance.now() - this.connectionStartedAt);
+      const startupDuration = Math.round(performance.now() - start);
       console.log(
         `Queue worker ${this.ref} loaded ${loadedTaskCount} tasks in ${loadedMode} mode` +
-        ` (${ms(connectionDuration)})`);
+        ` (${ms(startupDuration)})`);
       if (loadedMode === 'safe') this.scheduleSafeCheck();
       this.initialStartupComplete = true;
     } catch (e) {
