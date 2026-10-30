@@ -380,7 +380,7 @@ for (const adaptive of [false, true]) {
       assert.deepEqual(blocked.firelease, {
         code: 'queue-retries-blocked', phase: 'retrying', mode: 'safe',
         queue: source.toString(), source: source.toString(),
-        listenerLimit: 2, liveCount: 2, retryAt: START + 99_000
+        listenerLimit: 2, liveCount: 2, retryTimestamp: START + 99_000
       });
       assert.deepEqual(completed, [], 'The later healthy task is outside the bounded listener');
       assert.equal(source.queries[0].limit, 2);

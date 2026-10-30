@@ -32,7 +32,7 @@ indefinitely. Full mode can continue processing other tasks. The retry policy do
 limited listener beyond its configured size.
 When a loaded limited listener is full and every visible task is overdue and cooling down,
 Firelease reports `queue-retries-blocked` through `settings.captureError` at `error` severity,
-with the queue/source, listener limit, visible count, and earliest retry timestamp (`retryAt`).
+with the queue/source, listener limit, visible count, and earliest retry timestamp (`retryTimestamp`).
 Short retries are excluded until every task's quick-retry budget is exhausted. The report does not
 prove there are additional tasks outside the listener, blacklist tasks, or restart the process.
 It is emitted once until progress or a buffer change ends the blocked episode; failed retries

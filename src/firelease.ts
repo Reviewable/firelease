@@ -74,7 +74,7 @@ export interface FireleaseErrorDetails {
   phase?: string;
   queue?: string;
   reason?: string;
-  retryAt?: number;
+  retryTimestamp?: number;
   source?: string;
   timeNeeded?: Duration;
   timeout?: Duration;
@@ -354,7 +354,7 @@ class Task {
       const item = await transactionPromise;
       transactionCompleted = true;
       if (acquired || contended) {
-        this.source.clearRetry(this.key);
+        this.source.clearRetry(this);
         this.source.retryBlockReported = false;
       }
       if (acquired && item !== null && this.ref.key !== PING_KEY) {
@@ -807,17 +807,16 @@ class QueueSource {
     this.retryBlockReported = false;
   }
 
-  clearRetry(taskKey: string) {
-    this.retryDelays.get(taskKey)?.timeout.clear();
-    this.retryDelays.delete(taskKey);
+  clearRetry(task: Task) {
+    this.retryDelays.get(task.key)?.timeout.clear();
+    this.retryDelays.delete(task.key);
   }
 
   delayRetry(task: Task) {
-    const failures = Math.min(
-      (this.retryDelays.get(task.key)?.failures ?? 0) + 1, MAX_QUICK_LEASE_RETRIES + 1);
+    const failures = (this.retryDelays.get(task.key)?.failures ?? 0) + 1;
     const delay = failures <= MAX_QUICK_LEASE_RETRIES ? QUICK_LEASE_ERROR_RETRY_DELAY :
       Math.round(MIN_LEASE_ERROR_RETRY_DELAY * (1 + Math.random()));
-    this.clearRetry(task.key);
+    this.clearRetry(task);
     // Keep budgets across listener replacement, query eviction, reconnects, and cooldown expiry.
     // Forget idle history after five minutes so removed tasks cannot accumulate indefinitely.
     // Continuous failures refresh the history before it expires and stay on the long cooldown.
@@ -842,7 +841,7 @@ class QueueSource {
     }
     if (this.retryDelays.size < listenerLimit) return;
     const now = this.ref.now;
-    let retryAt = Infinity;
+    let retryTimestamp = Infinity;
     for (const [key, snap] of listener.snapshots) {
       if (((snap.val() as LeaseItem | null)?._lease?.expiry ?? 0) > now) {
         this.retryBlockReported = false;
@@ -850,7 +849,7 @@ class QueueSource {
       }
       const retry = this.retryDelays.get(key);
       if (!retry || retry.failures <= MAX_QUICK_LEASE_RETRIES || retry.deadline <= now) return;
-      retryAt = Math.min(retryAt, retry.deadline);
+      retryTimestamp = Math.min(retryTimestamp, retry.deadline);
     }
     if (this.retryBlockReported) return;
     // Retry expiry or listener replay alone is not progress: keep a persistent failure from
@@ -860,7 +859,7 @@ class QueueSource {
       this.reportError(
         'queue-retries-blocked', 'Firelease limited queue blocked by lease retry cooldowns',
         'error', {phase: 'retrying', mode: listener.mode, listenerLimit,
-          liveCount: listener.snapshots.size, retryAt});
+          liveCount: listener.snapshots.size, retryTimestamp});
     } catch (error) {
       console.error('Error reporting blocked queue:', error);
     }
