@@ -19,6 +19,26 @@ or not affinity jitter is enabled. It does not write to Firebase or blacklist th
 processes can still acquire it. Each failed retry starts a fresh cooldown; process restarts clear
 local cooldowns. Worker failures continue to use the existing lease-duration backoff.
 
+The cooldown frees worker capacity for other locally buffered tasks, but does not change their
+Firebase ordering. With a limited listener (a finite `bufferSize` or adaptive safe mode), failed
+leading tasks can still fill the buffer and block later tasks until they are acquired or removed.
+This existing limitation lasts longer after a transient failure because of the retry cooldown;
+persistent failures can block the buffer indefinitely. Full mode can continue processing other
+tasks. The retry policy does not expand a limited listener beyond its configured size.
+When a loaded limited listener is full and every visible task is overdue and cooling down,
+Firelease reports `queue-retries-blocked` through `settings.captureError` at `error` severity,
+with the queue/source, listener limit, visible count, and earliest retry timestamp (`retryAt`).
+Short ping retries are excluded until their quick-retry budget is exhausted. The report does not
+prove there are additional tasks outside the listener, blacklist tasks, or restart the process.
+It is emitted once until progress or a buffer change ends the blocked episode; failed retries
+and reconnects alone do not repeat it.
+
+Internal ping cleanup gets three retries at 3-second intervals before using the same 1–2 minute
+cooldown. Its retry budget survives listener replacement and reconnects, and resets after a
+successful cleanup. This allows prompt recovery from transient failures without a sustained rapid
+retry loop. Pings that exceed `healthyPingLatency` still report unhealthy even if cleanup succeeds;
+a later successful ping within that latency threshold restores healthy status.
+
 Affinity jitter
 ---------------
 

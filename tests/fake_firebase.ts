@@ -75,6 +75,7 @@ class FakeDatabaseRoot {
 
 export class FakeTaskRef {
   value: FakeTaskValue | null = null;
+  readonly valueListeners: Listener[] = [];
 
   constructor(readonly queueRef: FakeQueueRef, readonly key: string) {}
 
@@ -120,6 +121,18 @@ export class FakeTaskRef {
 
   get() {
     return Promise.resolve(clone(this.value));
+  }
+
+  on(event: string, callback: Listener['callback']) {
+    assert.strictEqual(event, 'value');
+    this.valueListeners.push({callback});
+    callback(new FakeSnapshot(this));
+  }
+
+  off(event: string, callback: Listener['callback']) {
+    assert.strictEqual(event, 'value');
+    const index = this.valueListeners.findIndex(listener => listener.callback === callback);
+    if (index !== -1) this.valueListeners.splice(index, 1);
   }
 
   remove() {
@@ -324,6 +337,7 @@ export class FakeQueueRef {
   }
 
   notifyTaskChange(task: FakeTaskRef, previous: FakeTaskValue | null) {
+    for (const listener of [...task.valueListeners]) listener.callback(new FakeSnapshot(task));
     if (previous === null && task.value !== null) {
       this.emit('child_added', new FakeSnapshot(task));
     } else if (previous !== null && task.value === null) {

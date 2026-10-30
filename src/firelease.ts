@@ -14,6 +14,8 @@ import {
 
 const PING_INTERVAL = ms('1m');
 const PING_KEY = 'ping';
+const PING_ERROR_RETRY_DELAY = ms('3s');
+const MAX_QUICK_PING_RETRIES = 3;
 const QUEUE_CHECK_TIMEOUT = ms('15s');
 const MAX_QUEUE_CHECK_COOLDOWN = ms('30s');
 const QUEUE_SIZE_HYSTERESIS = 0.15;
@@ -71,6 +73,7 @@ export interface FireleaseErrorDetails {
   phase?: string;
   queue?: string;
   reason?: string;
+  retryAt?: number;
   source?: string;
   timeNeeded?: Duration;
   timeout?: Duration;
@@ -349,6 +352,8 @@ class Task {
     try {
       const item = await transactionPromise;
       transactionCompleted = true;
+      if (acquired || contended) this.source.retryBlockReported = false;
+      if (acquired && this.ref.key === PING_KEY) this.source.pingFailures = 0;
       if (acquired && item !== null && this.ref.key !== PING_KEY) {
         this.recordLeaseTransaction('acquired', transactionPromise.transaction);
         if (jitterEligibleAt !== undefined) {
@@ -633,6 +638,7 @@ class QueueListener {
       mode === 'full' ? source.ref : source.ref.orderByChild('_lease/expiry').limitToFirst(limit);
     this.changeEvent = mode === 'full' ? 'child_changed' : 'child_moved';
     if (source.adaptive && mode === 'full') this.observers.add(source.onListenerSize);
+    this.observers.add(source.onRetryBlock);
   }
 
   start() {
@@ -700,6 +706,7 @@ class QueueListener {
     this.query.off(this.changeEvent, this.onAdd);
     this.query.off('value', this.onValue);
     this.observers.delete(this.source.onListenerSize);
+    this.observers.delete(this.source.onRetryBlock);
     this.notify();
   }
 
@@ -719,6 +726,9 @@ class QueueSource {
   exitTimer?: timers.Timeout;
   promotionNotBeforeTimestamp = 0;
   initialStartupComplete = false;
+  // Listener replays and expired cooldown entries must not replenish the quick-retry budget.
+  pingFailures = 0;
+  retryBlockReported = false;
   readonly connectionRef: NodeFire;
   readonly stats: QueueSourceStats;
   readonly jitter?: LeaseJitter;
@@ -791,10 +801,15 @@ class QueueSource {
     this.clearTasks();
     for (const retry of this.retryDelays.values()) retry.timeout.clear();
     this.retryDelays.clear();
+    this.pingFailures = 0;
+    this.retryBlockReported = false;
   }
 
   delayRetry(task: Task) {
-    const delay = Math.round(MIN_LEASE_ERROR_RETRY_DELAY * (1 + Math.random()));
+    const quickPingRetry =
+      task.ref.key === PING_KEY && ++this.pingFailures <= MAX_QUICK_PING_RETRIES;
+    const delay = quickPingRetry ? PING_ERROR_RETRY_DELAY :
+      Math.round(MIN_LEASE_ERROR_RETRY_DELAY * (1 + Math.random()));
     this.retryDelays.get(task.key)?.timeout.clear();
     // Keep cooldowns across listener replacement, query eviction, and reconnects. Expire even
     // removed tasks' entries so failures cannot accumulate indefinitely in memory.
@@ -802,7 +817,45 @@ class QueueSource {
       deadline: task.ref.now + delay,
       timeout: timers.setTimeout(() => {this.retryDelays.delete(task.key);}, delay)
     });
+    if (this.activeListener) this.onRetryBlock(this.activeListener);
   }
+
+  readonly onRetryBlock = (listener: QueueListener) => {
+    if (listener !== this.activeListener || !listener.loaded ||
+        listener.stopped || !this.connected) {
+      return;
+    }
+    const listenerLimit = this.listenerLimit(listener.mode);
+    if (listener.mode === 'full' || listener.snapshots.size < listenerLimit) {
+      this.retryBlockReported = false;
+      return;
+    }
+    if (this.retryDelays.size < listenerLimit) return;
+    const now = this.ref.now;
+    let retryAt = Infinity;
+    for (const [key, snap] of listener.snapshots) {
+      if (((snap.val() as LeaseItem | null)?._lease?.expiry ?? 0) > now) {
+        this.retryBlockReported = false;
+        return;
+      }
+      if (snap.ref.key === PING_KEY && this.pingFailures <= MAX_QUICK_PING_RETRIES) return;
+      const deadline = this.retryDelays.get(key)?.deadline;
+      if (!deadline || deadline <= now) return;
+      retryAt = Math.min(retryAt, deadline);
+    }
+    if (this.retryBlockReported) return;
+    // Retry expiry or listener replay alone is not progress: keep a persistent failure from
+    // reporting again every cooldown. Successful transactions or buffer changes re-arm reporting.
+    this.retryBlockReported = true;
+    try {
+      this.reportError(
+        'queue-retries-blocked', 'Firelease limited queue blocked by lease retry cooldowns',
+        'error', {phase: 'retrying', mode: listener.mode, listenerLimit,
+          liveCount: listener.snapshots.size, retryAt});
+    } catch (error) {
+      console.error('Error reporting blocked queue:', error);
+    }
+  };
 
   async enqueueStartup(epoch: number) {
     await queueCheckQueue.enqueue(this, 'startup', epoch, () => this.initialize(epoch));
@@ -1044,7 +1097,7 @@ class QueueSource {
     const error = new Error(message) as FireleaseError;
     error.level = level;
     error.firelease = {
-      ...details, code, phase: 'queue-sizing', queue: this.queue.ref.toString(),
+      ...details, code, phase: details.phase ?? 'queue-sizing', queue: this.queue.ref.toString(),
       source: this.ref.toString()
     };
     if (level === 'error') console.error(message, error.firelease);
