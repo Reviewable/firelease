@@ -20,6 +20,7 @@ const QUEUE_SIZE_HYSTERESIS = 0.15;
 const QUEUE_SIZE_MISMATCH_THRESHOLD = 100;
 const DEMOTION_JITTER = ms('30s');
 const LEASE_TRANSACTION_DURATION_ALPHA = 0.1;
+const MIN_LEASE_ERROR_RETRY_DELAY = ms('1m');
 const taskContext = new AsyncLocalStorage<{item: WorkerItem | undefined}>();
 
 declare const RETRY_DIRECTIVE: unique symbol;
@@ -290,7 +291,9 @@ class Task {
   prepare(hasQuota = true) {
     if (tasks[this.key] !== this || this.removed || this.working) return false;
     const now = this.ref.now;
-    const deadline = Math.max(this.expiry, this.jitter?.deadline(now, hasQuota) ?? 0);
+    const deadline = Math.max(
+      this.expiry, this.source.retryDelays.get(this.key)?.deadline ?? 0,
+      this.jitter?.deadline(now, hasQuota) ?? 0);
     const busy = deadline > now;
     // console.log('prepare', this.ref.key, 'expiry', this.expiry, 'now', now);
     if (!busy && hasQuota) {
@@ -312,7 +315,6 @@ class Task {
     let startTimestamp = 0;
     let acquired = false;
     let contended = false;
-    let reschedule = true;
     let firstAcquisition = false;
     this.working = true;
     this.phase = 'lease';
@@ -366,21 +368,20 @@ class Task {
       if (!transactionCompleted && this.ref.key !== PING_KEY) {
         this.recordLeaseTransaction('failed', transactionPromise.transaction);
       }
-      reschedule = false;
-      // Hardcoded retry -- hard to do anything smarter, since we failed to update the task in
-      // Firebase.
+      // Discard the optimistic local reservation, but back off independently of Firebase expiry
+      // updates. We cannot rely on writing a retry deadline to Firebase after a failed transaction.
       this.expiry = 0;
+      this.source.delayRetry(this);
       this.jitter?.skip();
       if (!/timeout/i.test(error.message) || this.source.connected) {
         console.log(`Queue item ${this.key} lease transaction error: ${error.message}`);
         error.firelease = _.assign(error.firelease ?? {}, {itemKey: this.key, phase: 'leasing'});
         settings.captureError(error);
-        timers.setTimeout(this.queue.scan, ms('3s'));
       }
     }
     this.working = false;
     this.phase = this.removed ? 'done' : 'retry';
-    if (!this.removed && reschedule) {
+    if (!this.removed) {
       // Wait until Queue.process() releases this task's concurrency slot before re-arming its
       // lease-expiry timer.  Listener swaps can replay the task while it is still working.
       timers.setTimeout(() => {void this.queue.process(this);}, 0);
@@ -721,6 +722,7 @@ class QueueSource {
   readonly connectionRef: NodeFire;
   readonly stats: QueueSourceStats;
   readonly jitter?: LeaseJitter;
+  readonly retryDelays = new Map<string, {deadline: number, timeout: timers.Timeout}>();
 
   constructor(readonly queue: Queue, readonly ref: NodeFire) {
     this.connectionRef = this.ref.root.child('.info/connected');
@@ -787,6 +789,19 @@ class QueueSource {
     this.activeListener?.stop();
     this.activeListener = undefined;
     this.clearTasks();
+    for (const retry of this.retryDelays.values()) retry.timeout.clear();
+    this.retryDelays.clear();
+  }
+
+  delayRetry(task: Task) {
+    const delay = Math.round(MIN_LEASE_ERROR_RETRY_DELAY * (1 + Math.random()));
+    this.retryDelays.get(task.key)?.timeout.clear();
+    // Keep cooldowns across listener replacement, query eviction, and reconnects. Expire even
+    // removed tasks' entries so failures cannot accumulate indefinitely in memory.
+    this.retryDelays.set(task.key, {
+      deadline: task.ref.now + delay,
+      timeout: timers.setTimeout(() => {this.retryDelays.delete(task.key);}, delay)
+    });
   }
 
   async enqueueStartup(epoch: number) {

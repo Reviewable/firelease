@@ -13,6 +13,12 @@ peers automatically otherwise leave NodeFire missing, causing Firelease to fail 
 This shared instance enables the per-database write statistics and optional
 `settings.captureWriteMetrics` callback documented below.
 
+Failed lease transactions retry after a random 1–2 minute local cooldown on that task. The
+cooldown releases concurrency, survives task updates and listener reconnects, and applies whether
+or not affinity jitter is enabled. It does not write to Firebase or blacklist the task, so other
+processes can still acquire it. Each failed retry starts a fresh cooldown; process restarts clear
+local cooldowns. Worker failures continue to use the existing lease-duration backoff.
+
 Affinity jitter
 ---------------
 
