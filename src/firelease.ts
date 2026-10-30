@@ -1,6 +1,6 @@
 import _ from 'lodash';
 import ms from 'ms';
-import NodeFire, {type TransactionMetadata} from 'nodefire';
+import NodeFire, {type Scope, type TransactionMetadata} from 'nodefire';
 import * as timers from 'safe-timers';
 import {AsyncLocalStorage} from 'node:async_hooks';
 import {DatabaseWriteObserver, type CaptureWriteMetrics} from './database';
@@ -139,6 +139,7 @@ export interface FireleaseApi {
 interface LeaseSnapshot {
   ref: NodeFire;
   val(): unknown;
+  child(path: string, scope: Scope): {val(): unknown};
 }
 
 interface NormalizedQueueOptions {
@@ -373,17 +374,22 @@ class Task {
         if (jitterEligibleAt !== undefined) this.source.jitter!.record('contended');
       }
     } catch (error) {
-      if (!transactionCompleted && this.ref.key !== PING_KEY) {
-        this.recordLeaseTransaction('failed', transactionPromise.transaction);
+      const disconnectedTimeout = /timeout/i.test(error.message) && !this.source.connected;
+      if (!transactionCompleted) {
+        if (this.ref.key !== PING_KEY) {
+          this.recordLeaseTransaction('failed', transactionPromise.transaction);
+        }
+        // Discard the optimistic local reservation, but back off independently of Firebase expiry
+        // updates. A disconnect timeout leaves the budget intact; scheduling waits for reconnect.
+        this.expiry = 0;
+        if (!disconnectedTimeout) this.source.delayRetry(this);
+        this.jitter?.skip();
       }
-      // Discard the optimistic local reservation, but back off independently of Firebase expiry
-      // updates. We cannot rely on writing a retry deadline to Firebase after a failed transaction.
-      this.expiry = 0;
-      this.source.delayRetry(this);
-      this.jitter?.skip();
-      if (!/timeout/i.test(error.message) || this.source.connected) {
-        console.log(`Queue item ${this.key} lease transaction error: ${error.message}`);
-        error.firelease = _.assign(error.firelease ?? {}, {itemKey: this.key, phase: 'leasing'});
+      if (!disconnectedTimeout) {
+        // run() handles worker failures, but an error reporter can still throw after acquisition.
+        const phase = transactionCompleted ? error.firelease?.phase ?? 'processing' : 'leasing';
+        console.log(`Queue item ${this.key} ${phase} error: ${error.message}`);
+        error.firelease = _.assign(error.firelease ?? {}, {itemKey: this.key, phase});
         settings.captureError(error);
       }
     }
@@ -826,7 +832,8 @@ class QueueSource {
         this.retryDelays.delete(task.key);
       }, LEASE_RETRY_HISTORY_RETENTION)
     });
-    if (this.activeListener) this.onRetryBlock(this.activeListener);
+    // Failed retries cannot end a reported episode. Listener changes still check for progress.
+    if (this.activeListener && !this.retryBlockReported) this.onRetryBlock(this.activeListener);
   }
 
   readonly onRetryBlock = (listener: QueueListener) => {
@@ -843,7 +850,7 @@ class QueueSource {
     const now = this.ref.now;
     let retryTimestamp = Infinity;
     for (const [key, snap] of listener.snapshots) {
-      if (((snap.val() as LeaseItem | null)?._lease?.expiry ?? 0) > now) {
+      if (((snap.child('_lease/expiry', {}).val() as number | null) ?? 0) > now) {
         this.retryBlockReported = false;
         return;
       }

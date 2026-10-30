@@ -18,6 +18,8 @@ Failed lease transactions get three retries at 3-second intervals, then retry af
 including internal pings. A successful lease transaction resets that task's budget. Retry history
 also expires after five minutes without a failure, so removed tasks cannot accumulate indefinitely
 in memory; continuously failing tasks retain their exhausted budget.
+Timeouts observed while Firebase is disconnected do not consume retry budget; new attempts wait
+until Firebase reports a connection. Failures after lease acquisition do not consume this budget.
 The delays release concurrency, survive task updates, query eviction and listener reconnects,
 and apply whether or not affinity jitter is enabled. They do not write to Firebase or blacklist
 the task, so other processes can still acquire it. Process restarts clear local retry history.

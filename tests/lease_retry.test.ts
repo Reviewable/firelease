@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {test, type TestContext} from 'node:test';
 
 import firelease, {TESTABLES, type FireleaseError} from '../src';
-import {asNodeFire, FakeQueueRef} from './fake_firebase';
+import {asNodeFire, FakeQueueRef, FakeSnapshot} from './fake_firebase';
 
 const START = 1_700_000_000_000;
 
@@ -120,6 +120,110 @@ test('cooldowns survive scans and listener replays without consuming quota', asy
     assert.equal(attempts, 5);
     assert.deepEqual(completed, ['a-healthy', 'z-failed']);
     assert.equal(task.value, null);
+  } finally {
+    TESTABLES.resetBetweenTests();
+  }
+});
+
+for (const priorFailures of [0, 2]) {
+  test(`disconnect timeouts preserve a budget with ${priorFailures} prior failures`, async t => {
+    TESTABLES.resetBetweenTests();
+    mockClock(t);
+    t.mock.method(Math, 'random', () => 0.5);
+    try {
+      const source = new FakeQueueRef('disconnect-retry-budget', 'queue');
+      source.transactionError = new Error('Lease transaction timeout');
+      const task = source.child('task');
+      const transaction = task.transaction.bind(task);
+      let pending = !priorFailures;
+      let rejectTransaction!: (error: Error) => void;
+      let attempts = 0;
+      t.mock.method(task, 'transaction', update => {
+        attempts++;
+        return pending ? new Promise<never>((resolve, reject) => {
+          rejectTransaction = reject;
+        }) : transaction(update);
+      });
+      const errors: FireleaseError[] = [];
+      firelease.settings.captureError = error => {errors.push(error);};
+      firelease.attachWorker(asNodeFire(source), {bufferSize: 1}, () => {
+        assert.fail('No lease transaction succeeds in this test');
+      });
+      await settle(t);
+      source.addTask('task', {});
+      await settle(t);
+      for (let i = 1; i < priorFailures; i++) await advanceTo(t, START + i * 3000);
+      if (priorFailures) {
+        pending = true;
+        await advanceTo(t, START + priorFailures * 3000);
+      }
+      for (let i = 0; i < 4; i++) {
+        assert.equal(firelease.listTasksInProgress().length, 1);
+        source.root.setConnected(false);
+        await advanceTo(t, Date.now() + 1000);
+        rejectTransaction(new Error('Lease transaction timeout'));
+        await settle(t);
+        assert.deepEqual(firelease.listTasksInProgress(), []);
+        assert.equal(errors.length, priorFailures, 'Disconnect timeouts remain unreported');
+        const attemptsBeforeReconnect = attempts;
+        await advanceTo(t, Date.now() + 1000);
+        assert.equal(attempts, attemptsBeforeReconnect, 'Nothing starts while disconnected');
+        if (i === 3) pending = false;
+        source.root.setConnected(true);
+        await settle(t);
+        assert.equal(attempts, attemptsBeforeReconnect + 1, 'Reconnect needs no new cooldown');
+      }
+      const reconnectedAt = Date.now();
+      const attemptsAfterReconnect = attempts;
+      const remainingQuickRetries = 3 - priorFailures;
+      for (let i = 1; i <= remainingQuickRetries; i++) {
+        await advanceTo(t, reconnectedAt + i * 3000 - 1);
+        assert.equal(attempts, attemptsAfterReconnect + i - 1);
+        await advanceTo(t, reconnectedAt + i * 3000);
+        assert.equal(attempts, attemptsAfterReconnect + i);
+      }
+      const longRetryAt = reconnectedAt + remainingQuickRetries * 3000 + 90_000;
+      await advanceTo(t, longRetryAt - 1);
+      assert.equal(attempts, attemptsAfterReconnect + remainingQuickRetries);
+      await advanceTo(t, longRetryAt);
+      assert.equal(attempts, attemptsAfterReconnect + remainingQuickRetries + 1);
+    } finally {
+      TESTABLES.resetBetweenTests();
+    }
+  });
+}
+
+test('a reporting error after acquisition does not change the lease or retry budget', async t => {
+  TESTABLES.resetBetweenTests();
+  mockClock(t);
+  try {
+    const source = new FakeQueueRef('post-acquisition-error', 'queue');
+    const task = source.child('task');
+    t.mock.method(task, 'remove', () => Promise.reject(new Error('Cleanup failed')));
+    let attempts = 0;
+    source.beforeTransaction = () => {attempts++;};
+    const errors: FireleaseError[] = [];
+    firelease.settings.captureError = error => {
+      if (error.message === 'Cleanup failed') throw new Error('Reporter failed');
+      errors.push(error);
+    };
+    firelease.attachWorker(asNodeFire(source), {bufferSize: 1, minLease: '30s'}, () => undefined);
+    await settle(t);
+    source.addTask('task', {});
+    await settle(t);
+    assert.equal(attempts, 1);
+    assert.equal(errors.length, 1);
+    assert.equal(errors[0].message, 'Reporter failed');
+    assert.equal(errors[0].firelease?.phase, 'processing');
+    assert.deepEqual(firelease.listTasksInProgress(), []);
+    await advanceTo(t, START + 29_999);
+    assert.equal(attempts, 1, 'The acquired lease stays in effect after a reporting failure');
+
+    source.transactionError = new Error('Lease transaction failed');
+    await advanceTo(t, START + 30_000);
+    assert.equal(attempts, 2);
+    for (const retryAt of [33_000, 36_000, 39_000]) await advanceTo(t, START + retryAt);
+    assert.equal(attempts, 5, 'All three quick lease retries remain available');
   } finally {
     TESTABLES.resetBetweenTests();
   }
@@ -405,6 +509,44 @@ for (const adaptive of [false, true]) {
     }
   });
 }
+
+test('blockage checks read only expiry and skip reported failure cycles', async t => {
+  TESTABLES.resetBetweenTests();
+  mockClock(t);
+  t.mock.method(Math, 'random', () => 0.5);
+  try {
+    const source = new FakeQueueRef('blocked-retry-read-cost', 'queue');
+    source.transactionError = new Error('Lease failed');
+    for (let i = 0; i < 8; i++) source.addTask(`task-${i}`, {payload: 'x'.repeat(10_000)});
+    const blockedReports: FireleaseError[] = [];
+    firelease.settings.captureError = error => {
+      if (error.firelease?.code === 'queue-retries-blocked') blockedReports.push(error);
+    };
+    firelease.attachWorker(asNodeFire(source), {bufferSize: 8}, () => undefined);
+    await settle(t);
+    const readValue = t.mock.method(FakeSnapshot.prototype, 'val');
+    const readChild = t.mock.method(FakeSnapshot.prototype, 'child');
+    for (const retryAt of [3000, 6000, 9000]) await advanceTo(t, START + retryAt);
+    assert.equal(blockedReports.length, 1);
+    assert.equal(readValue.mock.callCount(), 0, 'Blockage checks never copy task payloads');
+    assert(readChild.mock.callCount() > 0);
+    const childReads = readChild.mock.callCount();
+    await advanceTo(t, START + 99_000);
+    assert.equal(blockedReports.length, 1);
+    assert.equal(readChild.mock.callCount(), childReads, 'Reported failures need no snapshot scan');
+
+    // A real lease update still ends the episode even when failures skip the diagnostic scan.
+    source.addTask('task-7', {_lease: {expiry: START + 180_000}});
+    await settle(t);
+    assert.equal(blockedReports.length, 1);
+    source.addTask('task-7', {});
+    await settle(t);
+    assert.equal(
+      blockedReports.length, 2, 'Listener updates still re-arm reporting after progress');
+  } finally {
+    TESTABLES.resetBetweenTests();
+  }
+});
 
 test('only fully cooling limited listeners report blockage', async t => {
   TESTABLES.resetBetweenTests();

@@ -17,11 +17,17 @@ type ConnectionListener = {
   context?: unknown;
 };
 
-class FakeSnapshot {
+export class FakeSnapshot {
   constructor(readonly ref: FakeTaskRef, private readonly value = clone(ref.value)) {}
 
   val() {
     return clone(this.value);
+  }
+
+  child(path: string) {
+    let value: unknown = this.value;
+    for (const key of path.split('/')) value = (value as Record<string, unknown> | null)?.[key];
+    return {val: () => clone(value ?? null)};
   }
 }
 
