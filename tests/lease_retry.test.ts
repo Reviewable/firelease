@@ -25,7 +25,7 @@ function mockClock(t: TestContext) {
 }
 
 for (const [random, delay] of [[0, 60_000], [0.5, 90_000], [1, 120_000]]) {
-  test(`lease failures wait ${delay}ms and repeated failures start a fresh delay`, async t => {
+  test(`lease failures exhaust quick retries then wait ${delay}ms on each failure`, async t => {
     TESTABLES.resetBetweenTests();
     mockClock(t);
     let retryRandom = random;
@@ -46,24 +46,28 @@ for (const [random, delay] of [[0, 60_000], [0.5, 90_000], [1, 120_000]]) {
       assert.deepEqual(firelease.listTasksInProgress(), []);
       assert.deepEqual(task.value, {payload: 'unchanged'}, 'cooldown needs no database write');
 
-      await advanceTo(t, START + 3000);
-      await advanceTo(t, START + 3100);
-      assert.equal(attempts, 1, 'the old three-second retry must not run');
-      await advanceTo(t, START + delay - 1);
-      assert.equal(attempts, 1);
+      for (const retryAt of [3000, 6000, 9000]) {
+        const previousAttempts = attempts;
+        await advanceTo(t, START + retryAt - 1);
+        assert.equal(attempts, previousAttempts);
+        await advanceTo(t, START + retryAt);
+        assert.equal(attempts, previousAttempts + 1);
+      }
+      await advanceTo(t, START + 9000 + delay - 1);
+      assert.equal(attempts, 4, 'Only three quick retries are allowed');
       retryRandom = 1 - random;
-      await advanceTo(t, START + delay);
-      assert.equal(attempts, 2, 'retry happens without an external scan or snapshot');
-      assert.equal(errors.length, 2);
-      assert.equal(errors[1].firelease?.phase, 'leasing');
+      await advanceTo(t, START + 9000 + delay);
+      assert.equal(attempts, 5, 'retry happens without an external scan or snapshot');
+      assert.equal(errors.length, 5);
+      assert.equal(errors[4].firelease?.phase, 'leasing');
       assert.equal(workerCalls, 0);
 
       source.transactionError = undefined;
       const secondDelay = 180_000 - delay;
-      await advanceTo(t, START + delay + secondDelay - 1);
-      assert.equal(attempts, 2);
-      await advanceTo(t, START + delay + secondDelay);
-      assert.equal(attempts, 3);
+      await advanceTo(t, START + 9000 + delay + secondDelay - 1);
+      assert.equal(attempts, 5);
+      await advanceTo(t, START + 9000 + delay + secondDelay);
+      assert.equal(attempts, 6);
       assert.equal(workerCalls, 1);
       assert.equal(task.value, null);
     } finally {
@@ -93,25 +97,27 @@ test('cooldowns survive scans and listener replays without consuming quota', asy
     }, item => {completed.push(item.$ref.key!);});
     await settle(t);
     assert.equal(attempts, 1);
+    for (const retryAt of [3000, 6000, 9000]) await advanceTo(t, START + retryAt);
+    assert.equal(attempts, 4);
     await firelease.shutdown();
     firelease.settings.globalMaxConcurrent = 1;
-    await advanceTo(t, START + 1000);
-    assert.equal(attempts, 1, 'releasing quota must not bypass the cooldown');
+    await advanceTo(t, START + 10_000);
+    assert.equal(attempts, 4, 'releasing quota must not bypass the cooldown');
     source.addTask('z-failed', {payload: 2});
     // The one-item query evicts the failed task, then replays it when this task completes.
     source.addTask('a-healthy', {_lease: {expiry: -1}});
     await settle(t);
     assert.deepEqual(completed, ['a-healthy']);
-    assert.equal(attempts, 1);
+    assert.equal(attempts, 4);
 
     source.root.setConnected(false);
     source.root.setConnected(true);
     await settle(t);
-    await advanceTo(t, START + 89_999);
-    assert.equal(attempts, 1);
+    await advanceTo(t, START + 98_999);
+    assert.equal(attempts, 4);
     fail = false;
-    await advanceTo(t, START + 90_000);
-    assert.equal(attempts, 2);
+    await advanceTo(t, START + 99_000);
+    assert.equal(attempts, 5);
     assert.deepEqual(completed, ['a-healthy', 'z-failed']);
     assert.equal(task.value, null);
   } finally {
@@ -146,6 +152,83 @@ test('a newer Firebase lease still takes precedence over the retry deadline', as
     TESTABLES.resetBetweenTests();
   }
 });
+
+test('each task has its own quick-retry budget and recovers from a transient timeout', async t => {
+  TESTABLES.resetBetweenTests();
+  mockClock(t);
+  t.mock.method(Math, 'random', () => 0.5);
+  try {
+    const source = new FakeQueueRef('independent-retry-budgets', 'queue');
+    const attempts: Record<string, number> = {};
+    source.beforeTransaction = task => {
+      attempts[task.key] = (attempts[task.key] ?? 0) + 1;
+      source.transactionError = task.key === 'a' || attempts[task.key] === 1 ?
+        new Error('Lease transaction timeout') : undefined;
+    };
+    firelease.settings.captureError = () => undefined;
+    const completed: string[] = [];
+    firelease.attachWorker(asNodeFire(source), {maxConcurrent: 1}, item => {
+      completed.push(item.$ref.key!);
+    });
+    await settle(t);
+    source.addTask('a', {});
+    await settle(t);
+    for (const retryAt of [3000, 6000, 9000]) await advanceTo(t, START + retryAt);
+    assert.equal(attempts.a, 4);
+    await advanceTo(t, START + 10_000);
+    source.addTask('b', {});
+    await settle(t);
+    assert.equal(attempts.b, 1);
+    assert.deepEqual(firelease.listTasksInProgress(), []);
+    await advanceTo(t, START + 12_999);
+    assert.equal(attempts.b, 1);
+    await advanceTo(t, START + 13_000);
+    assert.equal(attempts.b, 2, 'Another task exhausting its budget must not consume this one');
+    assert.deepEqual(completed, ['b']);
+    assert.equal(attempts.a, 4, 'Other tasks can run during the long cooldown');
+    await advanceTo(t, START + 99_000);
+    assert.equal(attempts.a, 5);
+    await advanceTo(t, START + 102_000);
+    assert.equal(attempts.a, 5, 'Another task succeeding must not replenish this budget');
+  } finally {
+    TESTABLES.resetBetweenTests();
+  }
+});
+
+for (const [idleFor, nextDelay] of [[299_999, 90_000], [300_000, 3000]]) {
+  test(`retry history after ${idleFor}ms idle gives a ${nextDelay}ms retry delay`, async t => {
+    TESTABLES.resetBetweenTests();
+    mockClock(t);
+    t.mock.method(Math, 'random', () => 0.5);
+    try {
+      const source = new FakeQueueRef('idle-retry-history', 'queue');
+      source.transactionError = new Error('Lease failed');
+      let attempts = 0;
+      source.beforeTransaction = () => {attempts++;};
+      firelease.settings.captureError = () => undefined;
+      firelease.attachWorker(asNodeFire(source), () => undefined);
+      await settle(t);
+      const task = source.addTask('task', {});
+      await settle(t);
+      for (const retryAt of [3000, 6000, 9000]) await advanceTo(t, START + retryAt);
+      assert.equal(attempts, 4);
+      await task.remove();
+      await settle(t);
+      // Query removal might just be eviction, so it must not immediately reset retry history.
+      const reappearAt = START + 9000 + idleFor;
+      await advanceTo(t, reappearAt);
+      source.addTask('task', {});
+      await settle(t);
+      assert.equal(attempts, 5);
+      await advanceTo(t, reappearAt + nextDelay - 1);
+      assert.equal(attempts, 5);
+      await advanceTo(t, reappearAt + nextDelay);
+      assert.equal(attempts, 6);
+    } finally {
+      TESTABLES.resetBetweenTests();
+    }
+  });
+}
 
 for (const healthyPingLatency of [1500, 5000]) {
   test(`ping cleanup recovers with a ${healthyPingLatency}ms health threshold`, async t => {
@@ -190,25 +273,27 @@ for (const healthyPingLatency of [1500, 5000]) {
   });
 }
 
-test('persistent ping failures exhaust quick retries across reconnects until cleanup succeeds',
-  async t => {
+for (const key of ['ping', 'task']) {
+  test(`persistent ${key} failures exhaust quick retries until a transaction succeeds`, async t => {
     TESTABLES.resetBetweenTests();
     mockClock(t);
     t.mock.method(Math, 'random', () => 0.5);
     try {
-      const source = new FakeQueueRef('ping-retry-persistent', 'queue');
-      source.transactionError = new Error('Ping deletion failed');
+      const source = new FakeQueueRef(`${key}-retry-persistent`, 'queue');
+      source.transactionError = new Error('Lease transaction failed');
       let attempts = 0;
       source.beforeTransaction = () => {attempts++;};
       const blockedReports: FireleaseError[] = [];
       firelease.settings.captureError = error => {
         if (error.firelease?.code === 'queue-retries-blocked') blockedReports.push(error);
       };
+      let workerCalls = 0;
       firelease.attachWorker(asNodeFire(source), {bufferSize: 1}, () => {
-        assert.fail('Ping cleanup must not invoke the application worker');
+        assert.notEqual(key, 'ping', 'Ping cleanup must not invoke the application worker');
+        workerCalls++;
       });
       await settle(t);
-      const ping = source.addTask('ping', {timestamp: source.now, _lease: {expiry: source.now}});
+      const task = source.addTask(key, {timestamp: source.now, _lease: {expiry: source.now}});
       await settle(t);
       assert.equal(attempts, 1);
       for (const retryAt of [3000, 6000, 9000]) {
@@ -218,43 +303,49 @@ test('persistent ping failures exhaust quick retries across reconnects until cle
         await settle(t);
         await advanceTo(t, START + retryAt - 1);
         assert.equal(attempts, previousAttempts);
-        assert.equal(blockedReports.length, 0, 'Short ping retries do not trigger urgent reports');
+        assert.equal(blockedReports.length, 0, 'Short retries do not trigger urgent reports');
         await advanceTo(t, START + retryAt);
         assert.equal(attempts, previousAttempts + 1);
       }
       assert.equal(attempts, 4);
-      assert.equal(blockedReports.length, 1, 'Exhausted ping retries can block a limited listener');
+      assert.equal(blockedReports.length, 1, 'Exhausted retries can block a limited listener');
       source.root.setConnected(false);
       source.root.setConnected(true);
       await settle(t);
       await advanceTo(t, START + 12_000);
       assert.equal(attempts, 4, 'The quick-retry budget is exhausted');
-      await advanceTo(t, START + 98_999);
-      assert.equal(attempts, 4);
-      await advanceTo(t, START + 99_000);
-      assert.equal(attempts, 5);
-      assert.equal(blockedReports.length, 1, 'Persistent failures do not repeat the report');
+      for (const retryAt of [99_000, 189_000, 279_000, 369_000]) {
+        const previousAttempts = attempts;
+        await advanceTo(t, START + retryAt - 1);
+        assert.equal(
+          attempts, previousAttempts, 'Cooldown expiry must not replenish quick retries');
+        await advanceTo(t, START + retryAt);
+        assert.equal(attempts, previousAttempts + 1);
+        assert.equal(blockedReports.length, 1, 'Persistent failures do not repeat the report');
+      }
       source.transactionError = undefined;
-      await advanceTo(t, START + 188_999);
-      assert.equal(attempts, 5, 'Cooldown expiry must not replenish quick retries');
-      await advanceTo(t, START + 189_000);
-      assert.equal(attempts, 6);
-      assert.equal(ping.value, null);
+      await advanceTo(t, START + 458_999);
+      assert.equal(attempts, 8);
+      await advanceTo(t, START + 459_000);
+      assert.equal(attempts, 9);
+      assert.equal(task.value, null);
 
       source.transactionError = new Error('Another transient failure');
-      source.addTask('ping', {timestamp: source.now, _lease: {expiry: source.now}});
+      source.addTask(key, {timestamp: source.now, _lease: {expiry: source.now}});
       await settle(t);
-      assert.equal(attempts, 7);
+      assert.equal(attempts, 10);
       source.transactionError = undefined;
-      await advanceTo(t, START + 191_999);
-      assert.equal(attempts, 7);
-      await advanceTo(t, START + 192_000);
-      assert.equal(attempts, 8, 'Successful cleanup replenishes quick retries');
-      assert.equal(ping.value, null);
+      await advanceTo(t, START + 461_999);
+      assert.equal(attempts, 10);
+      await advanceTo(t, START + 462_000);
+      assert.equal(attempts, 11, 'A successful lease transaction replenishes quick retries');
+      assert.equal(task.value, null);
+      assert.equal(workerCalls, key === 'ping' ? 0 : 2);
     } finally {
       TESTABLES.resetBetweenTests();
     }
   });
+}
 
 for (const adaptive of [false, true]) {
   test(`${adaptive ? 'adaptive' : 'fixed'} listeners report complete retry blockage`, async t => {
@@ -279,6 +370,7 @@ for (const adaptive of [false, true]) {
         completed.push(item.$ref.key!);
       });
       await settle(t);
+      for (const retryAt of [3000, 6000, 9000]) await advanceTo(t, START + retryAt);
       assert.equal(blockedReports().length, 0, 'Wait for the complete initial query snapshot');
       source.releaseDeferredValues();
       await settle(t);
@@ -288,7 +380,7 @@ for (const adaptive of [false, true]) {
       assert.deepEqual(blocked.firelease, {
         code: 'queue-retries-blocked', phase: 'retrying', mode: 'safe',
         queue: source.toString(), source: source.toString(),
-        listenerLimit: 2, liveCount: 2, retryAt: START + 90_000
+        listenerLimit: 2, liveCount: 2, retryAt: START + 99_000
       });
       assert.deepEqual(completed, [], 'The later healthy task is outside the bounded listener');
       assert.equal(source.queries[0].limit, 2);
@@ -296,16 +388,17 @@ for (const adaptive of [false, true]) {
       source.root.setConnected(false);
       source.root.setConnected(true);
       await settle(t);
-      await advanceTo(t, START + 90_000);
+      await advanceTo(t, START + 99_000);
       assert.equal(blockedReports().length, 1, 'Replays and failed retries do not repeat reports');
 
       source.transactionError = undefined;
-      await advanceTo(t, START + 180_000);
+      await advanceTo(t, START + 189_000);
       assert.deepEqual(completed.sort(), ['a', 'b', 'c']);
       source.transactionError = new Error('New failure episode');
       source.addTask('a', {});
       source.addTask('b', {});
       await settle(t);
+      for (const retryAt of [192_000, 195_000, 198_000]) await advanceTo(t, START + retryAt);
       assert.equal(blockedReports().length, 2, 'Progress re-arms the blocked-buffer report');
     } finally {
       TESTABLES.resetBetweenTests();
@@ -334,6 +427,7 @@ test('only fully cooling limited listeners report blockage', async t => {
       }
       await settle(t);
     }
+    for (const retryAt of [3000, 6000, 9000]) await advanceTo(t, START + retryAt);
     assert.equal(errors.filter(error =>
       error.firelease?.code === 'queue-retries-blocked').length, 0);
   } finally {

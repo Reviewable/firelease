@@ -13,30 +13,32 @@ peers automatically otherwise leave NodeFire missing, causing Firelease to fail 
 This shared instance enables the per-database write statistics and optional
 `settings.captureWriteMetrics` callback documented below.
 
-Failed lease transactions retry after a random 1–2 minute local cooldown on that task. The
-cooldown releases concurrency, survives task updates and listener reconnects, and applies whether
-or not affinity jitter is enabled. It does not write to Firebase or blacklist the task, so other
-processes can still acquire it. Each failed retry starts a fresh cooldown; process restarts clear
-local cooldowns. Worker failures continue to use the existing lease-duration backoff.
+Failed lease transactions get three retries at 3-second intervals, then retry after a random
+1–2 minute local cooldown on every subsequent failure. Each task has its own retry budget,
+including internal pings. A successful lease transaction resets that task's budget. Retry history
+also expires after five minutes without a failure, so removed tasks cannot accumulate indefinitely
+in memory; continuously failing tasks retain their exhausted budget.
+The delays release concurrency, survive task updates, query eviction and listener reconnects,
+and apply whether or not affinity jitter is enabled. They do not write to Firebase or blacklist
+the task, so other processes can still acquire it. Process restarts clear local retry history.
+Worker failures continue to use the existing lease-duration backoff. During a widespread outage,
+each task on each process can make three extra attempts before entering the long cooldown.
 
 The cooldown frees worker capacity for other locally buffered tasks, but does not change their
 Firebase ordering. With a limited listener (a finite `bufferSize` or adaptive safe mode), failed
 leading tasks can still fill the buffer and block later tasks until they are acquired or removed.
-This existing limitation lasts longer after a transient failure because of the retry cooldown;
-persistent failures can block the buffer indefinitely. Full mode can continue processing other
-tasks. The retry policy does not expand a limited listener beyond its configured size.
+Transient failures can recover on a quick retry, but persistent failures can block the buffer
+indefinitely. Full mode can continue processing other tasks. The retry policy does not expand a
+limited listener beyond its configured size.
 When a loaded limited listener is full and every visible task is overdue and cooling down,
 Firelease reports `queue-retries-blocked` through `settings.captureError` at `error` severity,
 with the queue/source, listener limit, visible count, and earliest retry timestamp (`retryAt`).
-Short ping retries are excluded until their quick-retry budget is exhausted. The report does not
+Short retries are excluded until every task's quick-retry budget is exhausted. The report does not
 prove there are additional tasks outside the listener, blacklist tasks, or restart the process.
 It is emitted once until progress or a buffer change ends the blocked episode; failed retries
 and reconnects alone do not repeat it.
 
-Internal ping cleanup gets three retries at 3-second intervals before using the same 1–2 minute
-cooldown. Its retry budget survives listener replacement and reconnects, and resets after a
-successful cleanup. This allows prompt recovery from transient failures without a sustained rapid
-retry loop. Pings that exceed `healthyPingLatency` still report unhealthy even if cleanup succeeds;
+Pings that exceed `healthyPingLatency` still report unhealthy even if cleanup succeeds;
 a later successful ping within that latency threshold restores healthy status.
 
 Affinity jitter

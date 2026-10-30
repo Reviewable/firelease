@@ -14,8 +14,6 @@ import {
 
 const PING_INTERVAL = ms('1m');
 const PING_KEY = 'ping';
-const PING_ERROR_RETRY_DELAY = ms('3s');
-const MAX_QUICK_PING_RETRIES = 3;
 const QUEUE_CHECK_TIMEOUT = ms('15s');
 const MAX_QUEUE_CHECK_COOLDOWN = ms('30s');
 const QUEUE_SIZE_HYSTERESIS = 0.15;
@@ -23,6 +21,9 @@ const QUEUE_SIZE_MISMATCH_THRESHOLD = 100;
 const DEMOTION_JITTER = ms('30s');
 const LEASE_TRANSACTION_DURATION_ALPHA = 0.1;
 const MIN_LEASE_ERROR_RETRY_DELAY = ms('1m');
+const QUICK_LEASE_ERROR_RETRY_DELAY = ms('3s');
+const MAX_QUICK_LEASE_RETRIES = 3;
+const LEASE_RETRY_HISTORY_RETENTION = ms('5m');
 const taskContext = new AsyncLocalStorage<{item: WorkerItem | undefined}>();
 
 declare const RETRY_DIRECTIVE: unique symbol;
@@ -352,8 +353,10 @@ class Task {
     try {
       const item = await transactionPromise;
       transactionCompleted = true;
-      if (acquired || contended) this.source.retryBlockReported = false;
-      if (acquired && this.ref.key === PING_KEY) this.source.pingFailures = 0;
+      if (acquired || contended) {
+        this.source.clearRetry(this.key);
+        this.source.retryBlockReported = false;
+      }
       if (acquired && item !== null && this.ref.key !== PING_KEY) {
         this.recordLeaseTransaction('acquired', transactionPromise.transaction);
         if (jitterEligibleAt !== undefined) {
@@ -726,13 +729,13 @@ class QueueSource {
   exitTimer?: timers.Timeout;
   promotionNotBeforeTimestamp = 0;
   initialStartupComplete = false;
-  // Listener replays and expired cooldown entries must not replenish the quick-retry budget.
-  pingFailures = 0;
   retryBlockReported = false;
   readonly connectionRef: NodeFire;
   readonly stats: QueueSourceStats;
   readonly jitter?: LeaseJitter;
-  readonly retryDelays = new Map<string, {deadline: number, timeout: timers.Timeout}>();
+  readonly retryDelays = new Map<
+    string, {failures: number, deadline: number, timeout: timers.Timeout}
+  >();
 
   constructor(readonly queue: Queue, readonly ref: NodeFire) {
     this.connectionRef = this.ref.root.child('.info/connected');
@@ -801,21 +804,28 @@ class QueueSource {
     this.clearTasks();
     for (const retry of this.retryDelays.values()) retry.timeout.clear();
     this.retryDelays.clear();
-    this.pingFailures = 0;
     this.retryBlockReported = false;
   }
 
+  clearRetry(taskKey: string) {
+    this.retryDelays.get(taskKey)?.timeout.clear();
+    this.retryDelays.delete(taskKey);
+  }
+
   delayRetry(task: Task) {
-    const quickPingRetry =
-      task.ref.key === PING_KEY && ++this.pingFailures <= MAX_QUICK_PING_RETRIES;
-    const delay = quickPingRetry ? PING_ERROR_RETRY_DELAY :
+    const failures = Math.min(
+      (this.retryDelays.get(task.key)?.failures ?? 0) + 1, MAX_QUICK_LEASE_RETRIES + 1);
+    const delay = failures <= MAX_QUICK_LEASE_RETRIES ? QUICK_LEASE_ERROR_RETRY_DELAY :
       Math.round(MIN_LEASE_ERROR_RETRY_DELAY * (1 + Math.random()));
-    this.retryDelays.get(task.key)?.timeout.clear();
-    // Keep cooldowns across listener replacement, query eviction, and reconnects. Expire even
-    // removed tasks' entries so failures cannot accumulate indefinitely in memory.
+    this.clearRetry(task.key);
+    // Keep budgets across listener replacement, query eviction, reconnects, and cooldown expiry.
+    // Forget idle history after five minutes so removed tasks cannot accumulate indefinitely.
+    // Continuous failures refresh the history before it expires and stay on the long cooldown.
     this.retryDelays.set(task.key, {
-      deadline: task.ref.now + delay,
-      timeout: timers.setTimeout(() => {this.retryDelays.delete(task.key);}, delay)
+      failures, deadline: task.ref.now + delay,
+      timeout: timers.setTimeout(() => {
+        this.retryDelays.delete(task.key);
+      }, LEASE_RETRY_HISTORY_RETENTION)
     });
     if (this.activeListener) this.onRetryBlock(this.activeListener);
   }
@@ -838,10 +848,9 @@ class QueueSource {
         this.retryBlockReported = false;
         return;
       }
-      if (snap.ref.key === PING_KEY && this.pingFailures <= MAX_QUICK_PING_RETRIES) return;
-      const deadline = this.retryDelays.get(key)?.deadline;
-      if (!deadline || deadline <= now) return;
-      retryAt = Math.min(retryAt, deadline);
+      const retry = this.retryDelays.get(key);
+      if (!retry || retry.failures <= MAX_QUICK_LEASE_RETRIES || retry.deadline <= now) return;
+      retryAt = Math.min(retryAt, retry.deadline);
     }
     if (this.retryBlockReported) return;
     // Retry expiry or listener replay alone is not progress: keep a persistent failure from
