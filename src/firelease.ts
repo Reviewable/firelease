@@ -349,7 +349,7 @@ class Task {
       item._lease.initial ??= startTimestamp;
       item._lease.busy = true;
       return this.queue.callPreprocess(item);
-    }, {detectStuck: 5, prefetchValue: false, timeout: ms('15s')});
+    }, {prefetchValue: false, timeout: ms('15s')});
     let transactionCompleted = false;
     try {
       const item = await transactionPromise;
