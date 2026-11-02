@@ -24,6 +24,53 @@ function mockClock(t: TestContext) {
   t.mock.method(performance, 'now', () => Date.now() - START);
 }
 
+for (const code of ['maxretry', 'timeout']) {
+  test(`SDK ${code} remains reportable and uses the lease retry cooldown`, async t => {
+    TESTABLES.resetBetweenTests();
+    mockClock(t);
+    try {
+      const source = new FakeQueueRef(`lease-${code}`, 'queue');
+      const failure = Object.assign(new Error(`Firebase: ${code}`), {firebase: {code}});
+      source.transactionError = failure;
+      const task = source.addTask('failed', {payload: 'preserved'});
+      const transaction = task.transaction.bind(task);
+      let attempts = 0;
+      t.mock.method(task, 'transaction', (
+        update: Parameters<typeof task.transaction>[0], options?: unknown
+      ) => {
+        attempts++;
+        assert.deepEqual(options, {prefetchValue: false, timeout: 15_000});
+        return transaction(update);
+      });
+      const errors: FireleaseError[] = [];
+      firelease.settings.captureError = error => {errors.push(error);};
+      let workerCalls = 0;
+      firelease.attachWorker(asNodeFire(source), {minLease: '1h'}, () => {workerCalls++;});
+      await settle(t);
+
+      assert.equal(attempts, 1);
+      assert.equal(errors.length, 1);
+      assert.equal(errors[0].firelease?.phase, 'leasing');
+      assert.equal(errors[0], failure, 'retain the SDK error and Firebase code for callers');
+      assert.equal(workerCalls, 0);
+      assert.deepEqual(task.value, {payload: 'preserved'});
+      assert.equal(firelease.stats.leaseTransactions.failed, 1);
+      assert.deepEqual(firelease.listTasksInProgress(), []);
+
+      source.transactionError = undefined;
+      await advanceTo(t, START + 2999);
+      assert.equal(attempts, 1, 'a failure cannot cause an immediate lease loop');
+      await advanceTo(t, START + 3000);
+      assert.equal(attempts, 2);
+      assert.equal(workerCalls, 1);
+      assert.equal(task.value, null);
+      assert.equal(errors.length, 1);
+    } finally {
+      TESTABLES.resetBetweenTests();
+    }
+  });
+}
+
 for (const [random, delay] of [[0, 60_000], [0.5, 90_000], [1, 120_000]]) {
   test(`lease failures exhaust quick retries then wait ${delay}ms on each failure`, async t => {
     TESTABLES.resetBetweenTests();
