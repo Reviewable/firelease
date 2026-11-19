@@ -334,6 +334,10 @@ is fatal because no bounded listener is available to process the queue.
 
 A function used to capture errors.  Defaults to logging the stack to the console, but you may want to change it to something else in production.  The function should take a single exception argument.
 
+When Firelease identifies a queue item in an error, `error.firelease.itemRef` is the original
+NodeFire reference to that item. It is non-enumerable so it stays out of serialized diagnostics.
+`error.firelease.itemKey` contains the item's URL for logging or blacklisting.
+
 ```settings.captureWriteMetrics: {function(WriteMetric) | undefined}```
 
 Optional synchronous callback for every observed write to a database used by an attached worker,

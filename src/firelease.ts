@@ -68,6 +68,7 @@ export interface FireleaseErrorDetails {
   delta?: number;
   description?: string;
   itemKey?: string;
+  readonly itemRef?: NodeFire;
   listenerLimit?: number;
   liveCount?: number;
   mode?: QueueSourceMode;
@@ -389,8 +390,7 @@ class Task {
         // run() handles worker failures, but an error reporter can still throw after acquisition.
         const phase = transactionCompleted ? error.firelease?.phase ?? 'processing' : 'leasing';
         console.log(`Queue item ${this.key} ${phase} error: ${error.message}`);
-        error.firelease = _.assign(error.firelease ?? {}, {itemKey: this.key, phase});
-        settings.captureError(error);
+        this.captureError(error, phase);
       }
     }
     this.working = false;
@@ -425,9 +425,7 @@ class Task {
     } catch (error) {
       try {
         const metricError: FireleaseError = _.isError(error) ? error : new Error(String(error));
-        metricError.firelease = _.assign(
-          metricError.firelease ?? {}, {itemKey: this.key, phase: 'lease-metric'});
-        settings.captureError(metricError);
+        this.captureError(metricError, 'lease-metric');
       } catch (captureError) {
         try {
           console.error('Error capturing lease transaction metric error:', captureError);
@@ -478,10 +476,8 @@ class Task {
       try {
         if (/timeout/i.test(processingError.message) && !this.source.connected) return;
         console.log(`Queue item ${this.key} processing error: ${processingError.message}`);
-        processingError.firelease = _.assign(
-          processingError.firelease ?? {}, {itemKey: this.key, phase: 'processing'});
         processingError.level ??= 'warning';
-        settings.captureError(processingError);
+        this.captureError(processingError, 'processing');
         // Reset busy flag, unless we exceeded our original lease in which case we can't be sure
         // whether another handler has already picked up the task so leave it be.
         if (this.phase !== 'exceed') await this.ref.child('_lease/busy').set(null);
@@ -527,8 +523,15 @@ class Task {
   handlePostProcessingError(error: FireleaseError) {
     if (/timeout/i.test(error.message) && !this.source.connected) return;
     console.log(`Queue item ${this.key} post-processing error: ${error.message}`);
-    error.firelease = _.assign(
-      error.firelease ?? {}, {itemKey: this.key, phase: 'post-processing'});
+    this.captureError(error, 'post-processing');
+  }
+
+  captureError(error: FireleaseError, phase: string) {
+    error.firelease = _.assign(error.firelease ?? {}, {itemKey: this.key, phase});
+    // Keep the live database reference out of serialized error details.
+    Object.defineProperty(error.firelease, 'itemRef', {
+      value: this.ref, enumerable: false, configurable: true
+    });
     settings.captureError(error);
   }
 }
@@ -1289,6 +1292,9 @@ class Queue {
       try {
         const error: FireleaseError = _.isError(cause) ? cause : new Error(String(cause));
         error.firelease = {...error.firelease, itemKey: taskKey, phase: 'lease-affinity'};
+        Object.defineProperty(error.firelease, 'itemRef', {
+          value: ref, enumerable: false, configurable: true
+        });
         settings.captureError(error);
       } catch (error) {
         console.error('Error capturing lease affinity error:', error);
@@ -1497,10 +1503,21 @@ export function extendLease(item: WorkerItem, timeNeeded: Duration): Promise<voi
   if (!item?._lease?.expiry) throw new Error('Invalid task');
   item._lease.timeNeeded = Math.max(item._lease.timeNeeded ?? 0, duration(timeNeeded));
   if (!item._lease.extendLeasePromise) {
-    if (!globalMaxConcurrent) return Promise.reject(new Error('shutdown in progress'));
+    if (!globalMaxConcurrent) {
+      return Promise.reject(withLeaseExtensionContext(
+        new Error('shutdown in progress'), item.$ref, timeNeeded));
+    }
     item._lease.extendLeasePromise = updateLease(item, timeNeeded);
   }
   return item._lease.extendLeasePromise as Promise<void>;
+}
+
+function withLeaseExtensionContext(error: FireleaseError, ref: NodeFire, timeNeeded: Duration) {
+  error.firelease = _.assign(error.firelease ?? {}, {itemKey: ref.toString(), timeNeeded});
+  Object.defineProperty(error.firelease, 'itemRef', {
+    value: ref, enumerable: false, configurable: true
+  });
+  return error;
 }
 
 async function updateLease(item: WorkerItem, timeNeeded: Duration) {
@@ -1532,7 +1549,9 @@ async function updateLease(item: WorkerItem, timeNeeded: Duration) {
       currentLease.expiry += timeNeededUsed;
     }
     return currentItem;
-  }, {prefetchValue: false});
+  }, {prefetchValue: false}).catch(cause => {
+    error = _.isError(cause) ? cause : new Error(String(cause));
+  });
   const currentItem = itemValue as LeaseItem | null | undefined;
   const activeLease = item._lease as Lease | undefined;
   const moreTimeNeeded = (activeLease?.timeNeeded ?? 0) > (timeNeededUsed ?? 0) ?
@@ -1541,11 +1560,7 @@ async function updateLease(item: WorkerItem, timeNeeded: Duration) {
     delete activeLease.extendLeasePromise;
     delete activeLease.timeNeeded;
   }
-  if (error) {
-    error.firelease = _.assign(
-      error.firelease ?? {}, {itemKey: item.$ref.toString(), timeNeeded});
-    throw error;
-  }
+  if (error) throw withLeaseExtensionContext(error, item.$ref, timeNeeded);
   if (currentItem && activeLease) {
     activeLease.expiry = (currentItem._lease as Lease & {expiry: number}).expiry;
   }

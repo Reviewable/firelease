@@ -51,6 +51,7 @@ for (const code of ['maxretry', 'timeout']) {
       assert.equal(attempts, 1);
       assert.equal(errors.length, 1);
       assert.equal(errors[0].firelease?.phase, 'leasing');
+      assert.equal(errors[0].firelease?.itemRef, task);
       assert.equal(errors[0], failure, 'retain the SDK error and Firebase code for callers');
       assert.equal(workerCalls, 0);
       assert.deepEqual(task.value, {payload: 'preserved'});
@@ -70,6 +71,155 @@ for (const code of ['maxretry', 'timeout']) {
     }
   });
 }
+
+test('processing errors identify the queue item independently of the failed operation', async t => {
+  TESTABLES.resetBetweenTests();
+  mockClock(t);
+  try {
+    const source = new FakeQueueRef('processing', 'queue');
+    const task = source.addTask('failed', {});
+    const operationRef = asNodeFire(new FakeQueueRef('another-database', 'reviews'));
+    const failure = Object.assign(new Error('Firebase: maxretry'), {
+      firebase: {code: 'maxretry', $ref: operationRef}
+    });
+    const errors: FireleaseError[] = [];
+    firelease.settings.captureError = error => {errors.push(error);};
+    firelease.attachWorker(asNodeFire(source), {}, () => {throw failure;});
+    await settle(t);
+
+    const details = errors[0]?.firelease;
+    assert.ok(details);
+    assert.deepEqual(errors, [failure]);
+    assert.equal(details.itemRef, task);
+    assert.notEqual(details.itemRef, failure.firebase.$ref);
+    assert.deepEqual(JSON.parse(JSON.stringify(details)), {
+      itemKey: task.toString(), phase: 'processing'
+    });
+  } finally {
+    TESTABLES.resetBetweenTests();
+  }
+});
+
+for (const [kind, getAffinity] of [
+  ['throwing', () => {throw new Error('Affinity unavailable');}],
+  ['non-string', () => 42 as unknown as string]
+] as const) {
+  test(`${kind} affinity callbacks report the original item reference`, async t => {
+    TESTABLES.resetBetweenTests();
+    mockClock(t);
+    try {
+      const source = new FakeQueueRef('affinity-error', 'queue');
+      const task = source.addTask('failed', {});
+      const errors: FireleaseError[] = [];
+      firelease.settings.captureError = error => {errors.push(error);};
+      firelease.attachWorker(asNodeFire(source), {leaseJitter: true, getAffinity}, () => undefined);
+      await settle(t);
+
+      const details = errors[0]?.firelease;
+      assert.ok(details);
+      assert.equal(details.itemRef, task);
+      assert.deepEqual(JSON.parse(JSON.stringify(details)), {
+        itemKey: task.toString(), phase: 'lease-affinity'
+      });
+    } finally {
+      TESTABLES.resetBetweenTests();
+    }
+  });
+}
+
+test('a caught lease extension rejection identifies the original item', async t => {
+  TESTABLES.resetBetweenTests();
+  mockClock(t);
+  try {
+    const source = new FakeQueueRef('extend-error', 'queue');
+    const task = source.addTask('gone', {});
+    const caught: FireleaseError[] = [];
+    firelease.attachWorker(asNodeFire(source), {minLease: '1h'}, async item => {
+      try {
+        await item.$ref.remove();
+        await firelease.extendLease(item, '2h');
+      } catch (error) {
+        caught.push(error);
+      }
+    });
+    await settle(t);
+
+    assert.equal(caught.length, 1);
+    const details = caught[0].firelease;
+    assert.ok(details);
+    assert.equal(details.itemRef, task);
+    assert.deepEqual(JSON.parse(JSON.stringify(details)), {
+      code: 'gone', itemKey: task.toString(), timeNeeded: '2h'
+    });
+  } finally {
+    TESTABLES.resetBetweenTests();
+  }
+});
+
+test('caught Firebase lease extension failures retain the SDK error and item ref', async t => {
+  TESTABLES.resetBetweenTests();
+  mockClock(t);
+  try {
+    const source = new FakeQueueRef('extend-firebase-error', 'queue');
+    const task = source.addTask('failed', {});
+    const failure = Object.assign(new Error('Firebase: permission_denied'), {
+      firebase: {code: 'permission_denied'}
+    });
+    const caught: FireleaseError[] = [];
+    firelease.attachWorker(asNodeFire(source), {minLease: '1h'}, async item => {
+      source.transactionError = failure;
+      try {
+        await firelease.extendLease(item, '2h');
+      } catch (error) {
+        caught.push(error);
+      } finally {
+        source.transactionError = undefined;
+      }
+    });
+    await settle(t);
+
+    const details = caught[0]?.firelease;
+    assert.deepEqual(caught, [failure]);
+    assert.equal(details?.itemRef, task);
+    assert.deepEqual(JSON.parse(JSON.stringify(details)), {
+      itemKey: task.toString(), timeNeeded: '2h'
+    });
+  } finally {
+    TESTABLES.resetBetweenTests();
+  }
+});
+
+test('lease extensions rejected during shutdown identify the original item', async t => {
+  TESTABLES.resetBetweenTests();
+  mockClock(t);
+  try {
+    const source = new FakeQueueRef('extend-shutdown', 'queue');
+    const task = source.addTask('active', {});
+    const caught: FireleaseError[] = [];
+    let stopping: Promise<void> | undefined;
+    firelease.attachWorker(asNodeFire(source), {minLease: '1h'}, async item => {
+      stopping = firelease.shutdown();
+      try {
+        await firelease.extendLease(item, '2h');
+      } catch (error) {
+        caught.push(error);
+      }
+    });
+    await settle(t);
+    assert.ok(stopping);
+    await stopping;
+
+    assert.equal(caught.length, 1);
+    assert.equal(caught[0].message, 'shutdown in progress');
+    const details = caught[0].firelease;
+    assert.equal(details?.itemRef, task);
+    assert.deepEqual(JSON.parse(JSON.stringify(details)), {
+      itemKey: task.toString(), timeNeeded: '2h'
+    });
+  } finally {
+    TESTABLES.resetBetweenTests();
+  }
+});
 
 for (const [random, delay] of [[0, 60_000], [0.5, 90_000], [1, 120_000]]) {
   test(`lease failures exhaust quick retries then wait ${delay}ms on each failure`, async t => {
