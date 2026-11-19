@@ -156,6 +156,39 @@ test('a caught lease extension rejection identifies the original item', async t 
   }
 });
 
+test('caught Firebase lease extension failures retain the SDK error and item ref', async t => {
+  TESTABLES.resetBetweenTests();
+  mockClock(t);
+  try {
+    const source = new FakeQueueRef('extend-firebase-error', 'queue');
+    const task = source.addTask('failed', {});
+    const failure = Object.assign(new Error('Firebase: permission_denied'), {
+      firebase: {code: 'permission_denied'}
+    });
+    const caught: FireleaseError[] = [];
+    firelease.attachWorker(asNodeFire(source), {minLease: '1h'}, async item => {
+      source.transactionError = failure;
+      try {
+        await firelease.extendLease(item, '2h');
+      } catch (error) {
+        caught.push(error);
+      } finally {
+        source.transactionError = undefined;
+      }
+    });
+    await settle(t);
+
+    const details = caught[0]?.firelease;
+    assert.deepEqual(caught, [failure]);
+    assert.equal(details?.itemRef, task);
+    assert.deepEqual(JSON.parse(JSON.stringify(details)), {
+      itemKey: task.toString(), timeNeeded: '2h'
+    });
+  } finally {
+    TESTABLES.resetBetweenTests();
+  }
+});
+
 for (const [random, delay] of [[0, 60_000], [0.5, 90_000], [1, 120_000]]) {
   test(`lease failures exhaust quick retries then wait ${delay}ms on each failure`, async t => {
     TESTABLES.resetBetweenTests();

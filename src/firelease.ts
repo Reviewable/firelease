@@ -1538,7 +1538,9 @@ async function updateLease(item: WorkerItem, timeNeeded: Duration) {
       currentLease.expiry += timeNeededUsed;
     }
     return currentItem;
-  }, {prefetchValue: false});
+  }, {prefetchValue: false}).catch(cause => {
+    error = _.isError(cause) ? cause : new Error(String(cause));
+  });
   const currentItem = itemValue as LeaseItem | null | undefined;
   const activeLease = item._lease as Lease | undefined;
   const moreTimeNeeded = (activeLease?.timeNeeded ?? 0) > (timeNeededUsed ?? 0) ?
