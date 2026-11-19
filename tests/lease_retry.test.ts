@@ -51,6 +51,7 @@ for (const code of ['maxretry', 'timeout']) {
       assert.equal(attempts, 1);
       assert.equal(errors.length, 1);
       assert.equal(errors[0].firelease?.phase, 'leasing');
+      assert.equal(errors[0].firelease?.itemRef, task);
       assert.equal(errors[0], failure, 'retain the SDK error and Firebase code for callers');
       assert.equal(workerCalls, 0);
       assert.deepEqual(task.value, {payload: 'preserved'});
@@ -70,6 +71,34 @@ for (const code of ['maxretry', 'timeout']) {
     }
   });
 }
+
+test('processing errors identify the queue item independently of the failed operation', async t => {
+  TESTABLES.resetBetweenTests();
+  mockClock(t);
+  try {
+    const source = new FakeQueueRef('processing', 'queue');
+    const task = source.addTask('failed', {});
+    const operationRef = asNodeFire(new FakeQueueRef('another-database', 'reviews'));
+    const failure = Object.assign(new Error('Firebase: maxretry'), {
+      firebase: {code: 'maxretry', $ref: operationRef}
+    });
+    const errors: FireleaseError[] = [];
+    firelease.settings.captureError = error => {errors.push(error);};
+    firelease.attachWorker(asNodeFire(source), {}, () => {throw failure;});
+    await settle(t);
+
+    const details = errors[0]?.firelease;
+    assert.ok(details);
+    assert.deepEqual(errors, [failure]);
+    assert.equal(details.itemRef, task);
+    assert.notEqual(details.itemRef, failure.firebase.$ref);
+    assert.deepEqual(JSON.parse(JSON.stringify(details)), {
+      itemKey: task.toString(), phase: 'processing'
+    });
+  } finally {
+    TESTABLES.resetBetweenTests();
+  }
+});
 
 for (const [random, delay] of [[0, 60_000], [0.5, 90_000], [1, 120_000]]) {
   test(`lease failures exhaust quick retries then wait ${delay}ms on each failure`, async t => {

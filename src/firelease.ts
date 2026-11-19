@@ -68,6 +68,7 @@ export interface FireleaseErrorDetails {
   delta?: number;
   description?: string;
   itemKey?: string;
+  readonly itemRef?: NodeFire;
   listenerLimit?: number;
   liveCount?: number;
   mode?: QueueSourceMode;
@@ -389,8 +390,7 @@ class Task {
         // run() handles worker failures, but an error reporter can still throw after acquisition.
         const phase = transactionCompleted ? error.firelease?.phase ?? 'processing' : 'leasing';
         console.log(`Queue item ${this.key} ${phase} error: ${error.message}`);
-        error.firelease = _.assign(error.firelease ?? {}, {itemKey: this.key, phase});
-        settings.captureError(error);
+        this.captureError(error, phase);
       }
     }
     this.working = false;
@@ -425,9 +425,7 @@ class Task {
     } catch (error) {
       try {
         const metricError: FireleaseError = _.isError(error) ? error : new Error(String(error));
-        metricError.firelease = _.assign(
-          metricError.firelease ?? {}, {itemKey: this.key, phase: 'lease-metric'});
-        settings.captureError(metricError);
+        this.captureError(metricError, 'lease-metric');
       } catch (captureError) {
         try {
           console.error('Error capturing lease transaction metric error:', captureError);
@@ -478,10 +476,8 @@ class Task {
       try {
         if (/timeout/i.test(processingError.message) && !this.source.connected) return;
         console.log(`Queue item ${this.key} processing error: ${processingError.message}`);
-        processingError.firelease = _.assign(
-          processingError.firelease ?? {}, {itemKey: this.key, phase: 'processing'});
         processingError.level ??= 'warning';
-        settings.captureError(processingError);
+        this.captureError(processingError, 'processing');
         // Reset busy flag, unless we exceeded our original lease in which case we can't be sure
         // whether another handler has already picked up the task so leave it be.
         if (this.phase !== 'exceed') await this.ref.child('_lease/busy').set(null);
@@ -527,8 +523,15 @@ class Task {
   handlePostProcessingError(error: FireleaseError) {
     if (/timeout/i.test(error.message) && !this.source.connected) return;
     console.log(`Queue item ${this.key} post-processing error: ${error.message}`);
-    error.firelease = _.assign(
-      error.firelease ?? {}, {itemKey: this.key, phase: 'post-processing'});
+    this.captureError(error, 'post-processing');
+  }
+
+  captureError(error: FireleaseError, phase: string) {
+    error.firelease = _.assign(error.firelease ?? {}, {itemKey: this.key, phase});
+    // Keep the live database reference out of serialized error details.
+    Object.defineProperty(error.firelease, 'itemRef', {
+      value: this.ref, enumerable: false, configurable: true
+    });
     settings.captureError(error);
   }
 }
