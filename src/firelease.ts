@@ -1503,10 +1503,21 @@ export function extendLease(item: WorkerItem, timeNeeded: Duration): Promise<voi
   if (!item?._lease?.expiry) throw new Error('Invalid task');
   item._lease.timeNeeded = Math.max(item._lease.timeNeeded ?? 0, duration(timeNeeded));
   if (!item._lease.extendLeasePromise) {
-    if (!globalMaxConcurrent) return Promise.reject(new Error('shutdown in progress'));
+    if (!globalMaxConcurrent) {
+      return Promise.reject(withLeaseExtensionContext(
+        new Error('shutdown in progress'), item.$ref, timeNeeded));
+    }
     item._lease.extendLeasePromise = updateLease(item, timeNeeded);
   }
   return item._lease.extendLeasePromise as Promise<void>;
+}
+
+function withLeaseExtensionContext(error: FireleaseError, ref: NodeFire, timeNeeded: Duration) {
+  error.firelease = _.assign(error.firelease ?? {}, {itemKey: ref.toString(), timeNeeded});
+  Object.defineProperty(error.firelease, 'itemRef', {
+    value: ref, enumerable: false, configurable: true
+  });
+  return error;
 }
 
 async function updateLease(item: WorkerItem, timeNeeded: Duration) {
@@ -1549,14 +1560,7 @@ async function updateLease(item: WorkerItem, timeNeeded: Duration) {
     delete activeLease.extendLeasePromise;
     delete activeLease.timeNeeded;
   }
-  if (error) {
-    error.firelease = _.assign(
-      error.firelease ?? {}, {itemKey: item.$ref.toString(), timeNeeded});
-    Object.defineProperty(error.firelease, 'itemRef', {
-      value: item.$ref, enumerable: false, configurable: true
-    });
-    throw error;
-  }
+  if (error) throw withLeaseExtensionContext(error, item.$ref, timeNeeded);
   if (currentItem && activeLease) {
     activeLease.expiry = (currentItem._lease as Lease & {expiry: number}).expiry;
   }

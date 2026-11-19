@@ -189,6 +189,38 @@ test('caught Firebase lease extension failures retain the SDK error and item ref
   }
 });
 
+test('lease extensions rejected during shutdown identify the original item', async t => {
+  TESTABLES.resetBetweenTests();
+  mockClock(t);
+  try {
+    const source = new FakeQueueRef('extend-shutdown', 'queue');
+    const task = source.addTask('active', {});
+    const caught: FireleaseError[] = [];
+    let stopping: Promise<void> | undefined;
+    firelease.attachWorker(asNodeFire(source), {minLease: '1h'}, async item => {
+      stopping = firelease.shutdown();
+      try {
+        await firelease.extendLease(item, '2h');
+      } catch (error) {
+        caught.push(error);
+      }
+    });
+    await settle(t);
+    assert.ok(stopping);
+    await stopping;
+
+    assert.equal(caught.length, 1);
+    assert.equal(caught[0].message, 'shutdown in progress');
+    const details = caught[0].firelease;
+    assert.equal(details?.itemRef, task);
+    assert.deepEqual(JSON.parse(JSON.stringify(details)), {
+      itemKey: task.toString(), timeNeeded: '2h'
+    });
+  } finally {
+    TESTABLES.resetBetweenTests();
+  }
+});
+
 for (const [random, delay] of [[0, 60_000], [0.5, 90_000], [1, 120_000]]) {
   test(`lease failures exhaust quick retries then wait ${delay}ms on each failure`, async t => {
     TESTABLES.resetBetweenTests();
