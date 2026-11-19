@@ -258,12 +258,6 @@ const firelease = Object.freeze({
 }) as FireleaseApi;
 
 
-function attachItemRef(details: FireleaseErrorDetails, ref: NodeFire) {
-  // Keep the live database reference out of serialized error details.
-  Object.defineProperty(details, 'itemRef', {value: ref, enumerable: false, configurable: true});
-}
-
-
 class Task {
   readonly queue: Queue;
   readonly ref: NodeFire;
@@ -534,7 +528,10 @@ class Task {
 
   captureError(error: FireleaseError, phase: string) {
     error.firelease = _.assign(error.firelease ?? {}, {itemKey: this.key, phase});
-    attachItemRef(error.firelease, this.ref);
+    // Keep the live database reference out of serialized error details.
+    Object.defineProperty(error.firelease, 'itemRef', {
+      value: this.ref, enumerable: false, configurable: true
+    });
     settings.captureError(error);
   }
 }
@@ -1295,7 +1292,7 @@ class Queue {
       try {
         const error: FireleaseError = _.isError(cause) ? cause : new Error(String(cause));
         error.firelease = {...error.firelease, itemKey: taskKey, phase: 'lease-affinity'};
-        attachItemRef(error.firelease, ref);
+        Object.defineProperty(error.firelease, 'itemRef', {value: ref, configurable: true});
         settings.captureError(error);
       } catch (error) {
         console.error('Error capturing lease affinity error:', error);
