@@ -100,6 +100,33 @@ test('processing errors identify the queue item independently of the failed oper
   }
 });
 
+for (const [kind, getAffinity] of [
+  ['throwing', () => {throw new Error('Affinity unavailable');}],
+  ['non-string', () => 42 as unknown as string]
+] as const) {
+  test(`${kind} affinity callbacks report the original item reference`, async t => {
+    TESTABLES.resetBetweenTests();
+    mockClock(t);
+    try {
+      const source = new FakeQueueRef('affinity-error', 'queue');
+      const task = source.addTask('failed', {});
+      const errors: FireleaseError[] = [];
+      firelease.settings.captureError = error => {errors.push(error);};
+      firelease.attachWorker(asNodeFire(source), {leaseJitter: true, getAffinity}, () => undefined);
+      await settle(t);
+
+      const details = errors[0]?.firelease;
+      assert.ok(details);
+      assert.equal(details.itemRef, task);
+      assert.deepEqual(JSON.parse(JSON.stringify(details)), {
+        itemKey: task.toString(), phase: 'lease-affinity'
+      });
+    } finally {
+      TESTABLES.resetBetweenTests();
+    }
+  });
+}
+
 for (const [random, delay] of [[0, 60_000], [0.5, 90_000], [1, 120_000]]) {
   test(`lease failures exhaust quick retries then wait ${delay}ms on each failure`, async t => {
     TESTABLES.resetBetweenTests();
