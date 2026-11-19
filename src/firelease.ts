@@ -1292,7 +1292,9 @@ class Queue {
       try {
         const error: FireleaseError = _.isError(cause) ? cause : new Error(String(cause));
         error.firelease = {...error.firelease, itemKey: taskKey, phase: 'lease-affinity'};
-        Object.defineProperty(error.firelease, 'itemRef', {value: ref, configurable: true});
+        Object.defineProperty(error.firelease, 'itemRef', {
+          value: ref, enumerable: false, configurable: true
+        });
         settings.captureError(error);
       } catch (error) {
         console.error('Error capturing lease affinity error:', error);
@@ -1548,6 +1550,9 @@ async function updateLease(item: WorkerItem, timeNeeded: Duration) {
   if (error) {
     error.firelease = _.assign(
       error.firelease ?? {}, {itemKey: item.$ref.toString(), timeNeeded});
+    Object.defineProperty(error.firelease, 'itemRef', {
+      value: item.$ref, enumerable: false, configurable: true
+    });
     throw error;
   }
   if (currentItem && activeLease) {

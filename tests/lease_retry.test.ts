@@ -127,6 +127,35 @@ for (const [kind, getAffinity] of [
   });
 }
 
+test('a caught lease extension rejection identifies the original item', async t => {
+  TESTABLES.resetBetweenTests();
+  mockClock(t);
+  try {
+    const source = new FakeQueueRef('extend-error', 'queue');
+    const task = source.addTask('gone', {});
+    const caught: FireleaseError[] = [];
+    firelease.attachWorker(asNodeFire(source), {minLease: '1h'}, async item => {
+      try {
+        await item.$ref.remove();
+        await firelease.extendLease(item, '2h');
+      } catch (error) {
+        caught.push(error);
+      }
+    });
+    await settle(t);
+
+    assert.equal(caught.length, 1);
+    const details = caught[0].firelease;
+    assert.ok(details);
+    assert.equal(details.itemRef, task);
+    assert.deepEqual(JSON.parse(JSON.stringify(details)), {
+      code: 'gone', itemKey: task.toString(), timeNeeded: '2h'
+    });
+  } finally {
+    TESTABLES.resetBetweenTests();
+  }
+});
+
 for (const [random, delay] of [[0, 60_000], [0.5, 90_000], [1, 120_000]]) {
   test(`lease failures exhaust quick retries then wait ${delay}ms on each failure`, async t => {
     TESTABLES.resetBetweenTests();
